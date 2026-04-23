@@ -85,6 +85,8 @@ function XtepAIApp() {
         body: JSON.stringify({
           prompt: prompt,
           params,
+          sessionId: state.currentSessionId,
+          sessionName: session.name,
         }),
       });
 
