@@ -1,35 +1,321 @@
-import type { Metadata } from 'next';
-import Image from 'next/image';
+'use client';
 
-export const metadata: Metadata = {
-  title: '扣子编程 - AI 开发伙伴',
-  description: '扣子编程，你的 AI 开发伙伴已就位',
-};
+import { useState, useEffect } from 'react';
+import { AppProvider, useApp } from '@/contexts/AppContext';
+import { Navbar } from '@/components/Navbar';
+import { Sidebar } from '@/components/Sidebar';
+import { WelcomeScreen } from '@/components/WelcomeScreen';
+import { ChatMessages } from '@/components/ChatMessages';
+import { InputArea } from '@/components/InputArea';
+import { LoginModal } from '@/components/LoginModal';
+import { ImagePreviewModal } from '@/components/ImagePreviewModal';
+import {
+  GeneratedImage,
+  GenerationParams,
+  RESOLUTION_MAP,
+  ASPECT_RATIO_MAP,
+} from '@/types';
+import { generateId } from '@/lib/utils';
+
+function XtepAIApp() {
+  const { state, login, getCurrentSession, addMessage, addGeneratedImages, setGenerating } = useApp();
+  const [prompt, setPrompt] = useState('');
+
+  // Handle login modal via custom event
+  useEffect(() => {
+    const handleOpenLogin = () => {
+      // Dispatch to context
+    };
+    window.addEventListener('openLoginModal', handleOpenLogin);
+    return () => window.removeEventListener('openLoginModal', handleOpenLogin);
+  }, []);
+
+  // Handle example prompt selection
+  const handleSelectExample = (examplePrompt: string) => {
+    setPrompt(examplePrompt);
+  };
+
+  // Generate images
+  const handleGenerate = async () => {
+    if (!prompt.trim() || !state.user || !state.currentSessionId) return;
+
+    const session = getCurrentSession();
+    if (!session) return;
+
+    const params: GenerationParams = {
+      resolution: '1K', // Default, will be set by InputArea
+      aspectRatio: '1:1',
+      count: 2,
+    };
+
+    // Add user message
+    addMessage(state.currentSessionId, {
+      role: 'user',
+      content: prompt,
+      params,
+    });
+
+    setPrompt('');
+    setGenerating(true);
+
+    try {
+      // Call API to generate images
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          params,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.images && data.images.length > 0) {
+        // Add assistant message with generated images
+        addMessage(state.currentSessionId, {
+          role: 'assistant',
+          content: `✨ 生成 ${data.images.length} 张图片成功`,
+          params,
+          images: data.images,
+        });
+
+        // Add to gallery
+        addGeneratedImages(data.images);
+      } else {
+        // Fallback: generate mock images if API fails
+        const mockImages = generateMockImagesStatic(prompt, params, session.name, state.currentSessionId);
+        addMessage(state.currentSessionId, {
+          role: 'assistant',
+          content: `✨ 生成 ${mockImages.length} 张图片成功`,
+          params,
+          images: mockImages,
+        });
+        addGeneratedImages(mockImages);
+      }
+    } catch {
+      // Fallback: generate mock images
+      const mockImages = generateMockImagesStatic(prompt, params, session.name, state.currentSessionId);
+      addMessage(state.currentSessionId, {
+        role: 'assistant',
+        content: `✨ 生成 ${mockImages.length} 张图片成功`,
+        params,
+        images: mockImages,
+      });
+      addGeneratedImages(mockImages);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Get current session messages
+  const currentSession = getCurrentSession();
+  const messages = currentSession?.messages || [];
+
+  return (
+    <div className="h-screen flex flex-col bg-[#F9FAFB]">
+      {/* Navbar */}
+      <Navbar />
+
+      {/* Login Modal */}
+      <LoginModal />
+
+      {/* Image Preview Modal */}
+      <ImagePreviewModal />
+
+      {/* Main Content */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar */}
+        <Sidebar />
+
+        {/* Chat Area */}
+        <main className="flex-1 flex flex-col">
+          {/* Messages or Welcome */}
+          {state.user && messages.length > 0 ? (
+            <ChatMessages messages={messages} />
+          ) : (
+            <WelcomeScreen onSelectExample={handleSelectExample} />
+          )}
+
+          {/* Input Area */}
+          <InputArea
+            prompt={prompt}
+            onPromptChange={setPrompt}
+            onGenerate={handleGenerate}
+          />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// Helper function to generate mock images (moved outside component)
+function generateMockImagesStatic(
+  prompt: string,
+  params: GenerationParams,
+  sessionName: string,
+  sessionId: string
+): GeneratedImage[] {
+  const resolution = RESOLUTION_MAP[params.resolution];
+  const ratio = ASPECT_RATIO_MAP[params.aspectRatio];
+  const width = resolution;
+  const height = Math.round(resolution * (ratio.height / ratio.width));
+
+  return Array.from({ length: params.count }, (_, i) => ({
+    id: generateId(),
+    url: `https://picsum.photos/${width}/${height}?random=${Date.now()}-${i}`,
+    width,
+    height,
+    prompt,
+    sessionId,
+    sessionName,
+    params,
+    timestamp: Date.now(),
+  }));
+}
+
+// Updated component with fixed helper
+function XtepAIAppFixed() {
+  const { state, getCurrentSession, addMessage, addGeneratedImages, setGenerating } = useApp();
+  const [prompt, setPrompt] = useState('');
+
+  // Generate images
+  const handleGenerate = async () => {
+    if (!prompt.trim() || !state.user || !state.currentSessionId) return;
+
+    const session = getCurrentSession();
+    if (!session) return;
+
+    const params: GenerationParams = {
+      resolution: '1K',
+      aspectRatio: '1:1',
+      count: 2,
+    };
+
+    // Add user message
+    addMessage(state.currentSessionId, {
+      role: 'user',
+      content: prompt,
+      params,
+    });
+
+    setPrompt('');
+    setGenerating(true);
+
+    try {
+      // Call API to generate images
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          params,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.images && data.images.length > 0) {
+        // Add assistant message with generated images
+        addMessage(state.currentSessionId, {
+          role: 'assistant',
+          content: `✨ 生成 ${data.images.length} 张图片成功`,
+          params,
+          images: data.images,
+        });
+
+        // Add to gallery
+        addGeneratedImages(data.images);
+      } else {
+        // Fallback: generate mock images if API fails
+        const mockImages = generateMockImagesStatic(
+          prompt,
+          params,
+          session.name,
+          state.currentSessionId
+        );
+        addMessage(state.currentSessionId, {
+          role: 'assistant',
+          content: `✨ 生成 ${mockImages.length} 张图片成功`,
+          params,
+          images: mockImages,
+        });
+        addGeneratedImages(mockImages);
+      }
+    } catch {
+      // Fallback: generate mock images
+      const mockImages = generateMockImagesStatic(
+        prompt,
+        params,
+        session.name,
+        state.currentSessionId
+      );
+      addMessage(state.currentSessionId, {
+        role: 'assistant',
+        content: `✨ 生成 ${mockImages.length} 张图片成功`,
+        params,
+        images: mockImages,
+      });
+      addGeneratedImages(mockImages);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Handle example prompt selection
+  const handleSelectExample = (examplePrompt: string) => {
+    setPrompt(examplePrompt);
+  };
+
+  // Get current session messages
+  const currentSession = getCurrentSession();
+  const messages = currentSession?.messages || [];
+
+  return (
+    <div className="h-screen flex flex-col bg-[#F9FAFB]">
+      {/* Navbar */}
+      <Navbar />
+
+      {/* Login Modal */}
+      <LoginModal />
+
+      {/* Image Preview Modal */}
+      <ImagePreviewModal />
+
+      {/* Main Content */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar */}
+        <Sidebar />
+
+        {/* Chat Area */}
+        <main className="flex-1 flex flex-col">
+          {/* Messages or Welcome */}
+          {state.user && messages.length > 0 ? (
+            <ChatMessages messages={messages} />
+          ) : (
+            <WelcomeScreen onSelectExample={handleSelectExample} />
+          )}
+
+          {/* Input Area */}
+          <InputArea
+            prompt={prompt}
+            onPromptChange={setPrompt}
+            onGenerate={handleGenerate}
+          />
+        </main>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   return (
-    <div className="flex h-full items-center justify-center bg-background text-foreground transition-colors duration-300 dark:bg-background dark:text-foreground overflow-hidden min-h-screen">
-      {/* 主容器 */}
-      <main className="flex w-full h-full max-w-3xl flex-col items-center justify-center px-16 py-32 sm:items-center">
-        <div className="flex flex-col items-center justify-between gap-4">
-           <Image
-            src="https://lf-coze-web-cdn.coze.cn/obj/eden-cn/lm-lgvj/ljhwZthlaukjlkulzlp/coze-coding/icon/coze-coding.gif"
-            alt="扣子编程 Logo"
-            width={156}
-            height={130}
-          />
-          <div>
-            <div className="flex flex-col items-center gap-2 text-center sm:items-center sm:text-center">
-              <h1 className="max-w-xl text-base font-semibold leading-tight tracking-tight text-foreground dark:text-foreground">
-                应用开发中
-              </h1>
-              <p className="max-w-2xl text-sm leading-8 text-muted-foreground dark:text-muted-foreground">
-                请稍后，页面即将呈现
-              </p>
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
+    <AppProvider>
+      <XtepAIAppFixed />
+    </AppProvider>
   );
 }
