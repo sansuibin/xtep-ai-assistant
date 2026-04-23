@@ -3,7 +3,7 @@
 import { useApp } from '@/contexts/AppContext';
 
 export function Navbar() {
-  const { state, logout } = useApp();
+  const { state, logout, openLoginModal } = useApp();
 
   return (
     <header className="sticky top-0 z-40 h-16 bg-white border-b border-gray-100 shadow-sm">
@@ -49,11 +49,7 @@ export function Navbar() {
             </>
           ) : (
             <button
-              onClick={() => {
-                // Open login modal via context
-                const event = new CustomEvent('openLoginModal');
-                window.dispatchEvent(event);
-              }}
+              onClick={openLoginModal}
               className="px-5 py-2.5 text-sm font-medium text-white bg-xtep-gradient rounded-xl hover:shadow-xtep-hover transition-all btn-press focus-ring"
             >
               登录体验

@@ -131,6 +131,8 @@ interface AppContextType {
   state: AppState;
   login: (username: string) => void;
   logout: () => void;
+  openLoginModal: () => void;
+  closeLoginModal: () => void;
   createSession: (name?: string) => void;
   updateSessionName: (id: string, name: string) => void;
   deleteSession: (id: string) => void;
@@ -211,6 +213,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'LOGOUT' });
   }, []);
 
+  // Open login modal
+  const openLoginModal = useCallback(() => {
+    dispatch({ type: 'OPEN_LOGIN_MODAL' });
+  }, []);
+
+  // Close login modal
+  const closeLoginModal = useCallback(() => {
+    dispatch({ type: 'CLOSE_LOGIN_MODAL' });
+  }, []);
+
   // Create session
   const createSession = useCallback((name?: string) => {
     const session: Session = {
@@ -286,6 +298,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     state,
     login,
     logout,
+    openLoginModal,
+    closeLoginModal,
     createSession,
     updateSessionName,
     deleteSession,
