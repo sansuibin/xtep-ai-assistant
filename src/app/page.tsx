@@ -52,7 +52,7 @@ function XtepAIApp() {
     setPrompt(examplePrompt);
   };
 
-  // Generate images
+  // Generate images using Gemini multimodal model
   const handleGenerate = async () => {
     if (!prompt.trim() || !state.user || !state.currentSessionId) return;
 
@@ -62,7 +62,7 @@ function XtepAIApp() {
     const params: GenerationParams = {
       resolution: '1K',
       aspectRatio: '1:1',
-      count: 2,
+      count: 1,
     };
 
     // Add user message
@@ -76,64 +76,78 @@ function XtepAIApp() {
     setGenerating(true);
 
     try {
-      // Call API to generate images
-      const response = await fetch('/api/generate', {
+      // Build conversation history for context
+      const history = session.messages.map(msg => ({
+        role: msg.role,
+        parts: [
+          { text: msg.content },
+          ...(msg.images?.map(img => ({ imageUrl: img.url })) || []),
+        ],
+      }));
+
+      // Call new multimodal chat API
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          userId: state.user.id,
           prompt: prompt,
-          params,
           sessionId: state.currentSessionId,
           sessionName: session.name,
+          history: history,
+          imageSize: '1K',
+          aspectRatio: '1:1',
         }),
       });
 
       const data = await response.json();
 
-      if (data.images && data.images.length > 0) {
-        // Add assistant message with generated images
+      if (data.success) {
+        // Add assistant message
         addMessage(state.currentSessionId, {
           role: 'assistant',
-          content: `✨ 生成 ${data.images.length} 张图片成功`,
+          content: data.response.text || '生成完成',
           params,
-          images: data.images,
+          images: data.response.images?.map((url: string, i: number) => ({
+            id: generateId(),
+            url,
+            width: 1024,
+            height: 1024,
+            prompt: prompt,
+            sessionId: state.currentSessionId,
+            sessionName: session.name,
+            params,
+            timestamp: Date.now(),
+          })) || [],
         });
 
         // Add to gallery
-        addGeneratedImages(data.images);
+        if (data.response.images?.length > 0) {
+          addGeneratedImages(data.response.images.map((url: string, i: number) => ({
+            id: generateId(),
+            url,
+            width: 1024,
+            height: 1024,
+            prompt: prompt,
+            sessionId: state.currentSessionId,
+            sessionName: session.name,
+            params,
+            timestamp: Date.now(),
+          })));
+        }
       } else {
-        // Fallback: generate mock images if API fails
-        const mockImages = generateMockImages(
-          prompt,
-          params,
-          session.name,
-          state.currentSessionId
-        );
-        addMessage(state.currentSessionId, {
-          role: 'assistant',
-          content: `✨ 生成 ${mockImages.length} 张图片成功`,
-          params,
-          images: mockImages,
-        });
-        addGeneratedImages(mockImages);
+        throw new Error(data.error || '生成失败');
       }
-    } catch {
-      // Fallback: generate mock images
-      const mockImages = generateMockImages(
-        prompt,
-        params,
-        session.name,
-        state.currentSessionId
-      );
+    } catch (error) {
+      console.error('Generation error:', error);
+      // Fallback: show error message
       addMessage(state.currentSessionId, {
         role: 'assistant',
-        content: `✨ 生成 ${mockImages.length} 张图片成功`,
+        content: `生成失败: ${error instanceof Error ? error.message : '请检查 API 配置'}`,
         params,
-        images: mockImages,
       });
-      addGeneratedImages(mockImages);
     } finally {
       setGenerating(false);
     }
