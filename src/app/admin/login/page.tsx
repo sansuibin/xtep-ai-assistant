@@ -24,9 +24,10 @@ export default function AdminLoginPage() {
 			});
 
 			const data = await response.json();
+			console.log('Login response:', response.status, data);
 
-			if (!response.ok) {
-				setError(data.error || '登录失败');
+			if (!response.ok || !data.success) {
+				setError(data.error || '用户名或密码错误');
 				return;
 			}
 
@@ -36,7 +37,8 @@ export default function AdminLoginPage() {
 
 			// Redirect to dashboard
 			router.push('/admin/dashboard');
-		} catch {
+		} catch (err) {
+			console.error('Login error:', err);
 			setError('网络错误，请重试');
 		} finally {
 			setLoading(false);
