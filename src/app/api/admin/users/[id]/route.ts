@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, queryOne } from '@/lib/db';
+import { createHash } from 'crypto';
+
+// Simple hash function for passwords
+function hashPassword(password: string): string {
+	return createHash('sha256').update(password).digest('hex');
+}
 
 // Update user
 export async function PUT(request: NextRequest) {
@@ -10,7 +16,7 @@ export async function PUT(request: NextRequest) {
 			return NextResponse.json({ error: '未授权' }, { status: 401 });
 		}
 
-		const { id, username, apiKey, modelName, provider, isActive } = await request.json();
+		const { id, username, password, apiKey, modelName, provider, isActive } = await request.json();
 
 		if (!id) {
 			return NextResponse.json({ error: '缺少用户ID' }, { status: 400 });
@@ -24,6 +30,10 @@ export async function PUT(request: NextRequest) {
 		if (username !== undefined) {
 			updates.push(`username = $${paramIndex++}`);
 			values.push(username);
+		}
+		if (password !== undefined && password !== '') {
+			updates.push(`password_hash = $${paramIndex++}`);
+			values.push(hashPassword(password));
 		}
 		if (apiKey !== undefined) {
 			updates.push(`api_key = $${paramIndex++}`);

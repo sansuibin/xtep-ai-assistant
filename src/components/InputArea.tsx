@@ -22,7 +22,7 @@ export function InputArea({ prompt, onPromptChange, onGenerate }: InputAreaProps
   const { state } = useApp();
   const [resolution, setResolution] = useState<Resolution>('1K');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
-  const [count, setCount] = useState<number>(2);
+  const [count, setCount] = useState<number>(1);
   const [showResolutionPanel, setShowResolutionPanel] = useState(false);
   const [showAspectRatioPanel, setShowAspectRatioPanel] = useState(false);
   const [showCountPanel, setShowCountPanel] = useState(false);

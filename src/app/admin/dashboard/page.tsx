@@ -25,6 +25,7 @@ export default function AdminDashboard() {
 	const [formData, setFormData] = useState({
 		userId: '',
 		username: '',
+		password: '',
 		apiKey: '',
 		modelName: 'gemini-2.0-flash',
 		provider: 'google',
@@ -80,6 +81,7 @@ export default function AdminDashboard() {
 		setFormData({
 			userId: '',
 			username: '',
+			password: '',
 			apiKey: '',
 			modelName: 'gemini-2.0-flash',
 			provider: 'google',
@@ -92,6 +94,7 @@ export default function AdminDashboard() {
 		setFormData({
 			userId: user.user_id,
 			username: user.username,
+			password: '', // Don't prefill password for security
 			apiKey: '', // Don't prefill API key for security
 			modelName: user.model_name,
 			provider: user.provider,
@@ -119,10 +122,14 @@ export default function AdminDashboard() {
 
 			if (editingUser) {
 				body.id = editingUser.id.toString();
+				if (formData.password) {
+					body.password = formData.password;
+				}
 				if (formData.apiKey) {
 					body.apiKey = formData.apiKey;
 				}
 			} else {
+				body.password = formData.password;
 				body.apiKey = formData.apiKey;
 			}
 
@@ -426,6 +433,19 @@ export default function AdminDashboard() {
 									onChange={(e) => setFormData({ ...formData, username: e.target.value })}
 									className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#E53935]"
 									placeholder="用户显示名称"
+								/>
+							</div>
+
+							<div>
+								<label className="block text-sm font-medium text-gray-700 mb-1">
+									登录密码 <span className="text-red-500">{editingUser ? '' : '*'}</span>
+								</label>
+								<input
+									type="password"
+									value={formData.password}
+									onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+									className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#E53935]"
+									placeholder={editingUser ? '留空则不修改密码' : '设置登录密码'}
 								/>
 							</div>
 

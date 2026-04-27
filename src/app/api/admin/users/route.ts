@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query, queryOne } from '@/lib/db';
+import { createHash } from 'crypto';
+
+// Simple hash function for passwords
+function hashPassword(password: string): string {
+	return createHash('sha256').update(password).digest('hex');
+}
 
 // Get all users
 export async function GET(request: NextRequest) {
@@ -53,11 +59,11 @@ export async function POST(request: NextRequest) {
 			return NextResponse.json({ error: '未授权' }, { status: 401 });
 		}
 
-		const { userId, username, apiKey, modelName, provider } = await request.json();
+		const { userId, username, password, apiKey, modelName, provider } = await request.json();
 
-		if (!userId || !username || !apiKey) {
+		if (!userId || !username || !apiKey || !password) {
 			return NextResponse.json(
-				{ error: '缺少必填字段' },
+				{ error: '缺少必填字段（密码必填）' },
 				{ status: 400 }
 			);
 		}
@@ -75,6 +81,9 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// Hash password if provided
+		const passwordHash = password ? hashPassword(password) : null;
+
 		// Insert new user
 		const result = await queryOne<{
 			id: number;
@@ -84,10 +93,10 @@ export async function POST(request: NextRequest) {
 			provider: string;
 			is_active: boolean;
 		}>(
-			`INSERT INTO api_configs (user_id, username, api_key, model_name, provider, is_active, usage_count)
-			 VALUES ($1, $2, $3, $4, $5, true, 0)
+			`INSERT INTO api_configs (user_id, username, password_hash, api_key, model_name, provider, is_active, usage_count)
+			 VALUES ($1, $2, $3, $4, $5, $6, true, 0)
 			 RETURNING id, user_id, username, model_name, provider, is_active`,
-			[userId, username, apiKey, modelName || 'gemini-2.0-flash', provider || 'google']
+			[userId, username, passwordHash, apiKey, modelName || 'gemini-2.0-flash', provider || 'google']
 		);
 
 		if (!result) {

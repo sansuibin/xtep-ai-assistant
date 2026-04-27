@@ -29,6 +29,7 @@ export const apiConfigs = pgTable(
 		id: serial().primaryKey(),
 		userId: varchar("user_id", { length: 64 }).notNull().unique(), // User identifier
 		username: varchar("username", { length: 128 }).notNull(), // Display name
+		passwordHash: varchar("password_hash", { length: 255 }), // User password hash
 		apiKey: text("api_key").notNull(), // User's API key (encrypted in production)
 		modelName: varchar("model_name", { length: 128 }).notNull().default('gemini-2.0-flash'), // Default model
 		provider: varchar("provider", { length: 32 }).notNull().default('google'), // 'google', 'openai', etc.
