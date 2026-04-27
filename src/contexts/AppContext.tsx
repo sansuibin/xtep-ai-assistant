@@ -189,21 +189,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [state.galleryViewMode]);
 
   // Login
-  const login = useCallback((username: string) => {
+  const login = useCallback((username: string, userData?: { id: string; modelName?: string; provider?: string }) => {
     const user: User = {
-      id: `user-${Date.now()}`,
+      id: userData?.id || `user-${Date.now()}`,
       username,
+      modelName: userData?.modelName,
+      provider: userData?.provider,
     };
     dispatch({ type: 'SET_USER', payload: user });
     dispatch({ type: 'CLOSE_LOGIN_MODAL' });
 
     // Create default session
+    const sessionId = `session-${Date.now()}`;
     const session: Session = {
-      id: `session-${Date.now()}`,
-      name: '我的设计',
+      id: sessionId,
+      name: '新对话',
+      messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      messages: [],
     };
     dispatch({ type: 'ADD_SESSION', payload: session });
   }, []);
