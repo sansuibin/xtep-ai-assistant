@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { query, queryOne } from '@/lib/db';
 
 // Get all users
 export async function GET(request: NextRequest) {
@@ -11,20 +11,21 @@ export async function GET(request: NextRequest) {
 			return NextResponse.json({ error: '未授权' }, { status: 401 });
 		}
 
-		const client = getSupabaseClient();
-
 		// Fetch all API configs (users)
-		const { data, error } = await client
-			.from('api_configs')
-			.select('*')
-			.order('created_at', { ascending: false });
-
-		if (error) {
-			throw error;
-		}
+		const users = await query<{
+			id: number;
+			user_id: string;
+			username: string;
+			model_name: string;
+			provider: string;
+			is_active: boolean;
+			usage_count: number;
+			created_at: string;
+			updated_at: string | null;
+		}>('SELECT * FROM api_configs ORDER BY created_at DESC');
 
 		// Don't return API keys in list
-		const safeData = (data || []).map((user: Record<string, unknown>) => ({
+		const safeData = users.rows.map((user) => ({
 			id: user.id,
 			user_id: user.user_id,
 			username: user.username,
@@ -61,16 +62,13 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		const client = getSupabaseClient();
-
 		// Check if user_id already exists
-		const { data: existing } = await client
-			.from('api_configs')
-			.select('id')
-			.eq('user_id', userId)
-			.limit(1);
+		const existing = await queryOne<{ id: number }>(
+			'SELECT id FROM api_configs WHERE user_id = $1 LIMIT 1',
+			[userId]
+		);
 
-		if (existing && existing.length > 0) {
+		if (existing) {
 			return NextResponse.json(
 				{ error: '用户ID已存在' },
 				{ status: 400 }
@@ -78,34 +76,27 @@ export async function POST(request: NextRequest) {
 		}
 
 		// Insert new user
-		const { data, error } = await client
-			.from('api_configs')
-			.insert({
-				user_id: userId,
-				username,
-				api_key: apiKey,
-				model_name: modelName || 'gemini-2.0-flash',
-				provider: provider || 'google',
-				is_active: true,
-				usage_count: 0,
-			})
-			.select()
-			.limit(1);
+		const result = await queryOne<{
+			id: number;
+			user_id: string;
+			username: string;
+			model_name: string;
+			provider: string;
+			is_active: boolean;
+		}>(
+			`INSERT INTO api_configs (user_id, username, api_key, model_name, provider, is_active, usage_count)
+			 VALUES ($1, $2, $3, $4, $5, true, 0)
+			 RETURNING id, user_id, username, model_name, provider, is_active`,
+			[userId, username, apiKey, modelName || 'gemini-2.0-flash', provider || 'google']
+		);
 
-		if (error) {
-			throw error;
+		if (!result) {
+			throw new Error('Insert failed');
 		}
 
 		return NextResponse.json({
 			success: true,
-			user: {
-				id: data[0].id,
-				user_id: data[0].user_id,
-				username: data[0].username,
-				model_name: data[0].model_name,
-				provider: data[0].provider,
-				is_active: data[0].is_active,
-			},
+			user: result,
 		});
 	} catch (error) {
 		console.error('Create user error:', error);

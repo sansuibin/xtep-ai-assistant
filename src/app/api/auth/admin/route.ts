@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { query, queryOne } from '@/lib/db';
 import { createHash } from 'crypto';
 
 // Simple password hashing (in production, use bcrypt)
@@ -23,27 +23,19 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		const client = getSupabaseClient();
-
 		// Find admin user
-		const { data: admins, error } = await client
-			.from('admin_users')
-			.select('*')
-			.eq('username', username)
-			.limit(1);
+		const admin = await queryOne<{
+			id: number;
+			username: string;
+			password_hash: string;
+		}>('SELECT id, username, password_hash FROM admin_users WHERE username = $1 LIMIT 1', [username]);
 
-		if (error) {
-			throw error;
-		}
-
-		if (!admins || admins.length === 0) {
+		if (!admin) {
 			return NextResponse.json(
 				{ error: '用户名或密码错误' },
 				{ status: 401 }
 			);
 		}
-
-		const admin = admins[0];
 
 		// Verify password
 		if (!verifyPassword(password, admin.password_hash)) {

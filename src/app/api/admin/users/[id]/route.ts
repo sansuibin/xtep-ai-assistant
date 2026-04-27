@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { query, queryOne } from '@/lib/db';
 
 // Update user
 export async function PUT(request: NextRequest) {
@@ -16,42 +16,54 @@ export async function PUT(request: NextRequest) {
 			return NextResponse.json({ error: '缺少用户ID' }, { status: 400 });
 		}
 
-		const client = getSupabaseClient();
+		// Build update query dynamically
+		const updates: string[] = [];
+		const values: unknown[] = [];
+		let paramIndex = 1;
 
-		// Build update object
-		const updates: Record<string, unknown> = {};
-		if (username !== undefined) updates.username = username;
-		if (apiKey !== undefined) updates.api_key = apiKey;
-		if (modelName !== undefined) updates.model_name = modelName;
-		if (provider !== undefined) updates.provider = provider;
-		if (isActive !== undefined) updates.is_active = isActive;
-		updates.updated_at = new Date().toISOString();
-
-		const { data, error } = await client
-			.from('api_configs')
-			.update(updates)
-			.eq('id', id)
-			.select()
-			.limit(1);
-
-		if (error) {
-			throw error;
+		if (username !== undefined) {
+			updates.push(`username = $${paramIndex++}`);
+			values.push(username);
 		}
+		if (apiKey !== undefined) {
+			updates.push(`api_key = $${paramIndex++}`);
+			values.push(apiKey);
+		}
+		if (modelName !== undefined) {
+			updates.push(`model_name = $${paramIndex++}`);
+			values.push(modelName);
+		}
+		if (provider !== undefined) {
+			updates.push(`provider = $${paramIndex++}`);
+			values.push(provider);
+		}
+		if (isActive !== undefined) {
+			updates.push(`is_active = $${paramIndex++}`);
+			values.push(isActive);
+		}
+		updates.push(`updated_at = $${paramIndex++}`);
+		values.push(new Date().toISOString());
+		values.push(id);
 
-		if (!data || data.length === 0) {
+		const result = await queryOne<{
+			id: number;
+			user_id: string;
+			username: string;
+			model_name: string;
+			provider: string;
+			is_active: boolean;
+		}>(
+			`UPDATE api_configs SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING id, user_id, username, model_name, provider, is_active`,
+			values
+		);
+
+		if (!result) {
 			return NextResponse.json({ error: '用户不存在' }, { status: 404 });
 		}
 
 		return NextResponse.json({
 			success: true,
-			user: {
-				id: data[0].id,
-				user_id: data[0].user_id,
-				username: data[0].username,
-				model_name: data[0].model_name,
-				provider: data[0].provider,
-				is_active: data[0].is_active,
-			},
+			user: result,
 		});
 	} catch (error) {
 		console.error('Update user error:', error);
@@ -75,16 +87,7 @@ export async function DELETE(request: NextRequest) {
 			return NextResponse.json({ error: '缺少用户ID' }, { status: 400 });
 		}
 
-		const client = getSupabaseClient();
-
-		const { error } = await client
-			.from('api_configs')
-			.delete()
-			.eq('id', parseInt(id));
-
-		if (error) {
-			throw error;
-		}
+		const result = await query('DELETE FROM api_configs WHERE id = $1', [parseInt(id)]);
 
 		return NextResponse.json({ success: true });
 	} catch (error) {
