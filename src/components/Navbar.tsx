@@ -25,6 +25,15 @@ export function Navbar() {
 
         {/* Right: User Actions */}
         <div className="flex items-center gap-4">
+          {/* 管理员后台入口 */}
+          <a
+            href="/admin/login"
+            target="_blank"
+            className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-[#E53935] border border-gray-200 hover:border-[#E53935] rounded-lg transition-all"
+          >
+            管理后台
+          </a>
+
           {state.user ? (
             <>
               {/* User Avatar */}
