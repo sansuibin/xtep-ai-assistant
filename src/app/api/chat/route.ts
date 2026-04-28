@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenerativeAI, Content, Part } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { generateId } from '@/lib/utils';
 import { writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { queryOne } from '@/lib/db';
 
 // Request body type
 interface ChatRequest {
@@ -37,18 +36,10 @@ async function ensureImageDir() {
   }
 }
 
-// Get user's API key from database
-async function getUserApiKey(userId: string): Promise<string | null> {
-  try {
-    const user = await queryOne<{ api_key: string; is_active: boolean }>(
-      'SELECT api_key, is_active FROM api_configs WHERE user_id = $1 AND is_active = true LIMIT 1',
-      [userId]
-    );
-    return user?.api_key || null;
-  } catch (error) {
-    console.error('Error fetching user API key:', error);
-    return null;
-  }
+// Get API key from environment
+function getApiKey(): string | null {
+  // 优先使用 GOOGLE_CLOUD_API_KEY（用于 @google/genai SDK）
+  return process.env.GOOGLE_CLOUD_API_KEY || process.env.GOOGLE_API_KEY || null;
 }
 
 // Convert local image URL to base64
@@ -86,45 +77,10 @@ async function saveImageToFile(base64Data: string, sessionId: string): Promise<s
   
   // Return public URL
   if (process.env.NODE_ENV === 'production') {
-    // In production, return a route that serves the file
     return `/api/images/${filename}`;
   } else {
     return `/chat-images/${filename}`;
   }
-}
-
-// Convert history to Gemini format
-async function convertHistoryToGemini(history: ChatMessage[]): Promise<Content[]> {
-  const contents: Content[] = [];
-  
-  for (const msg of history) {
-    const parts: Part[] = [];
-    
-    for (const part of msg.parts) {
-      if (part.text) {
-        parts.push({ text: part.text });
-      } else if (part.imageUrl) {
-        const base64 = await imageUrlToBase64(part.imageUrl);
-        if (base64) {
-          parts.push({
-            inlineData: {
-              mimeType: 'image/png',
-              data: base64,
-            },
-          });
-        }
-      }
-    }
-    
-    if (parts.length > 0) {
-      contents.push({
-        role: msg.role === 'model' ? 'model' : 'user',
-        parts,
-      });
-    }
-  }
-  
-  return contents;
 }
 
 // Image generation API route with Gemini multimodal model
@@ -140,31 +96,60 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get user's API key
-    let apiKey = process.env.GOOGLE_API_KEY; // Fallback to env var
-    
-    if (userId) {
-      const userApiKey = await getUserApiKey(userId);
-      if (userApiKey) {
-        apiKey = userApiKey;
-      }
-    }
+    // Get API key
+    const apiKey = getApiKey();
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'API key not configured. Please set GOOGLE_API_KEY environment variable or add API key in admin panel.' },
+        { error: 'API key not configured. Please set GOOGLE_CLOUD_API_KEY environment variable.' },
         { status: 500 }
       );
     }
 
-    // Initialize Gemini client
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-3.1-flash-image-preview',
+    // Initialize Gemini client with new SDK
+    const ai = new GoogleGenAI({
+      apiKey: apiKey,
     });
 
-    // Build contents with history
-    const contents: Content[] = await convertHistoryToGemini(history);
+    // Build contents
+    const contents: Array<{
+      role: string;
+      parts: Array<{
+        text?: string;
+        inlineData?: { mimeType: string; data: string };
+      }>;
+    }> = [];
+    
+    // Add history
+    for (const msg of history) {
+      const parts: Array<{
+        text?: string;
+        inlineData?: { mimeType: string; data: string };
+      }> = [];
+      
+      for (const part of msg.parts) {
+        if (part.text) {
+          parts.push({ text: part.text });
+        } else if (part.imageUrl) {
+          const base64 = await imageUrlToBase64(part.imageUrl);
+          if (base64) {
+            parts.push({
+              inlineData: {
+                mimeType: 'image/png',
+                data: base64,
+              },
+            });
+          }
+        }
+      }
+      
+      if (parts.length > 0) {
+        contents.push({
+          role: msg.role === 'model' ? 'model' : 'user',
+          parts,
+        });
+      }
+    }
     
     // Add current prompt
     contents.push({
@@ -174,39 +159,49 @@ export async function POST(request: NextRequest) {
 
     // Configure generation
     const generationConfig = {
+      maxOutputTokens: 32768,
+      temperature: 1,
+      topP: 0.95,
+      responseModalities: ['TEXT', 'IMAGE'],
       thinkingConfig: {
-        thinkingBudget: 1024, // Enable thinking
+        thinkingLevel: 'HIGH',
       },
-      responseModalities: ['TEXT', 'IMAGE'] as string[],
       imageConfig: {
-        aspectRatio: aspectRatio,
-        imageSize: imageSize,
+        aspectRatio: aspectRatio || '1:1',
+        imageSize: imageSize || '1K',
         outputMimeType: 'image/png',
       },
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'OFF' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'OFF' },
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
+      ],
     };
 
     // Generate content stream
-    const result = await model.generateContentStream({
+    const streamingResp = await ai.models.generateContentStream({
+      model: 'gemini-3.1-flash-image-preview',
       contents,
-      generationConfig,
+      config: generationConfig,
     });
 
     // Collect response
     const responseParts: { text?: string; imageUrl?: string }[] = [];
     let hasImage = false;
 
-    for await (const chunk of result.stream) {
-      const candidate = chunk.candidates?.[0];
-      if (!candidate?.content?.parts) continue;
-
-      for (const part of candidate.content.parts) {
-        if (part.text) {
-          responseParts.push({ text: part.text });
-        } else if (part.inlineData) {
-          // Save image to file
-          const imageUrl = await saveImageToFile(part.inlineData.data || '', sessionId);
-          responseParts.push({ imageUrl });
-          hasImage = true;
+    for await (const chunk of streamingResp) {
+      if (chunk.text) {
+        responseParts.push({ text: chunk.text });
+      } else if (chunk.candidates?.[0]?.content?.parts) {
+        for (const part of chunk.candidates[0].content.parts) {
+          if (part.text) {
+            responseParts.push({ text: part.text });
+          } else if (part.inlineData) {
+            const imageUrl = await saveImageToFile(part.inlineData.data || '', sessionId);
+            responseParts.push({ imageUrl });
+            hasImage = true;
+          }
         }
       }
     }
@@ -231,7 +226,7 @@ export async function POST(request: NextRequest) {
         hasImage,
       },
       message: hasImage 
-        ? `Generated ${imageUrls.length} image(s)`
+        ? 'Generated ' + imageUrls.length + ' image(s)'
         : 'Response generated (no image)',
       provider: 'gemini-multimodal',
     });
@@ -247,14 +242,14 @@ export async function POST(request: NextRequest) {
 
 // GET request to check API status
 export async function GET() {
-  const apiKey = process.env.GOOGLE_API_KEY;
+  const apiKey = getApiKey();
 
   return NextResponse.json({
     status: 'ok',
     service: 'Xtep AI Multimodal Chat',
     model: 'gemini-3.1-flash-image-preview',
     apiKeyConfigured: !!apiKey,
-    apiKeyPreview: apiKey ? `${apiKey.substring(0, 8)}...` : null,
+    apiKeyPreview: apiKey ? apiKey.substring(0, 8) + '...' : null,
     features: [
       'Text generation',
       'Image generation',
