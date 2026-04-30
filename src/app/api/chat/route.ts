@@ -223,6 +223,7 @@ export async function POST(request: NextRequest) {
     let contentText = '';
     let imageUrls: string[] = [];
     let hasImage = false;
+    let inBase64Block = false;
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -266,19 +267,35 @@ export async function POST(request: NextRequest) {
 
                 // Handle main content
                 if (delta.content) {
-                  // Check if content contains base64 image
                   const contentStr = delta.content;
+                  contentText += contentStr;
 
-                  if (contentStr.includes('data:image')) {
-                    // Accumulate image data - we'll process it at the end
-                    contentText += contentStr;
-                  } else {
-                    contentText += contentStr;
-                    controller.enqueue(encoder.encode(JSON.stringify({
-                      type: 'text',
-                      content: contentStr,
-                    }) + '\n'));
+                  // Detect if we're entering a base64 image block
+                  if (contentStr.includes('data:image') || contentStr.includes('![image]')) {
+                    inBase64Block = true;
                   }
+
+                  // Detect end of base64 block (closing paren or end of markdown image)
+                  if (inBase64Block && (contentStr.includes(')') || contentStr.includes('.png)') || contentStr.includes('.jpg)'))) {
+                    inBase64Block = false;
+                    continue; // Skip this chunk, image will be extracted later
+                  }
+
+                  // If we're in a base64 block, don't forward raw data to frontend
+                  if (inBase64Block) {
+                    continue;
+                  }
+
+                  // Skip forwarding if this chunk looks like raw base64 data
+                  if (/^[A-Za-z0-9+/=\s]+$/.test(contentStr) && contentStr.length > 100) {
+                    continue;
+                  }
+
+                  // Forward normal text to frontend
+                  controller.enqueue(encoder.encode(JSON.stringify({
+                    type: 'text',
+                    content: contentStr,
+                  }) + '\n'));
                 }
               } catch {
                 // Skip invalid JSON
@@ -286,11 +303,12 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          // Process any accumulated content for images
+          // Stream ended - extract images from accumulated content
+          let textWithoutImages = contentText;
+
           // Parse markdown image patterns: ![image](data:image/png;base64,...)
           const imageRegex = /!\[image\]\(data:image\/[^;]+;base64,([^)]+)\)/g;
           let match;
-          let textWithoutImages = contentText;
 
           while ((match = imageRegex.exec(contentText)) !== null) {
             const base64Data = match[1];
@@ -298,7 +316,6 @@ export async function POST(request: NextRequest) {
               const imageUrl = await saveImageToFile(base64Data, sessionId);
               imageUrls.push(imageUrl);
               hasImage = true;
-              // Replace image markdown with placeholder
               textWithoutImages = textWithoutImages.replace(match[0], `[图片${imageUrls.length}]`);
             } catch (e) {
               console.error('Error saving image:', e);
@@ -314,7 +331,7 @@ export async function POST(request: NextRequest) {
             const base64Data = match[1];
             try {
               const imageUrl = await saveImageToFile(base64Data, sessionId);
-              // Only add the last image (avoid duplicates from thinking)
+              // Only add unique images (avoid duplicates from thinking)
               if (!imageUrls.includes(imageUrl)) {
                 imageUrls.push(imageUrl);
                 hasImage = true;
@@ -324,11 +341,18 @@ export async function POST(request: NextRequest) {
             }
           }
 
+          // Clean up text - remove base64 data strings
+          textWithoutImages = textWithoutImages.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{100,}/g, '[图片]');
+          // Also remove any dangling markdown image syntax
+          textWithoutImages = textWithoutImages.replace(/!\[image\]\(\[图片\]\)/g, '[图片]');
+          // Trim whitespace
+          textWithoutImages = textWithoutImages.trim();
+
           // Send final summary
           controller.enqueue(encoder.encode(JSON.stringify({
             type: 'done',
             data: {
-              text: textWithoutImages.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{100,}/g, '[图片]'),
+              text: textWithoutImages,
               images: imageUrls,
               hasImage,
               reasoning: reasoningText,

@@ -173,61 +173,47 @@ const USER_STORAGE_KEY = 'xtep-ai-user';
 
 // Provider
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(appReducer, initialState);
-
-  // Load state from localStorage on mount
-  useEffect(() => {
+  const [state, dispatch] = useReducer(appReducer, initialState, (init) => {
+    // Lazy initializer: restore from localStorage synchronously to prevent flash
+    if (typeof window === 'undefined') return init;
     try {
-      // Restore user session
+      const restored: Partial<AppState> = {};
       const savedUser = localStorage.getItem(USER_STORAGE_KEY);
       if (savedUser) {
-        const user = JSON.parse(savedUser);
-        dispatch({ type: 'SET_USER', payload: user });
-
-        // Also restore sessions for this user
-        const savedState = localStorage.getItem(STORAGE_KEY);
-        if (savedState) {
-          const parsed = JSON.parse(savedState);
-          dispatch({
-            type: 'LOAD_STATE',
-            payload: {
-              galleryViewMode: parsed.galleryViewMode || 'timeline',
-              sessions: parsed.sessions || [],
-              currentSessionId: parsed.currentSessionId || null,
-              gallery: parsed.gallery || [],
-            },
-          });
-        }
-
-        // Create default session if none exists
-        if (!savedState || !JSON.parse(savedState).sessions?.length) {
-          const sessionId = `session-${Date.now()}`;
-          const session: Session = {
-            id: sessionId,
-            name: '新对话',
-            messages: [],
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          };
-          dispatch({ type: 'ADD_SESSION', payload: session });
-        }
-      } else {
-        // No user, just restore preferences
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          dispatch({
-            type: 'LOAD_STATE',
-            payload: {
-              galleryViewMode: parsed.galleryViewMode || 'timeline',
-            },
-          });
-        }
+        restored.user = JSON.parse(savedUser);
+      }
+      const savedState = localStorage.getItem(STORAGE_KEY);
+      if (savedState) {
+        const parsed = JSON.parse(savedState);
+        restored.galleryViewMode = parsed.galleryViewMode || 'timeline';
+        restored.sessions = parsed.sessions || [];
+        restored.currentSessionId = parsed.currentSessionId || null;
+        restored.gallery = parsed.gallery || [];
+      }
+      // Only override if we actually restored something
+      if (Object.keys(restored).length > 0) {
+        return { ...init, ...restored };
       }
     } catch {
       // Ignore parse errors
     }
-  }, []);
+    return init;
+  });
+
+  // Create default session if user is logged in but has no sessions
+  useEffect(() => {
+    if (state.user && state.sessions.length === 0) {
+      const sessionId = `session-${Date.now()}`;
+      const session: Session = {
+        id: sessionId,
+        name: '新对话',
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      dispatch({ type: 'ADD_SESSION', payload: session });
+    }
+  }, [state.user]); // Only re-run when user changes
 
   // Save state to localStorage whenever it changes
   useEffect(() => {
