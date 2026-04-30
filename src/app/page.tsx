@@ -45,6 +45,10 @@ function XtepAIApp() {
       params,
     });
 
+    // Calculate the index of the assistant message BEFORE adding it
+    // (React batches state updates, so getCurrentSession() would return stale data)
+    const assistantMsgIndex = session.messages.length + 1;
+
     // Add placeholder assistant message for streaming
     addMessage(state.currentSessionId, {
       role: 'assistant',
@@ -53,10 +57,6 @@ function XtepAIApp() {
       images: [],
       reasoning: '',
     });
-
-    // Get the index of the assistant message we just added
-    const updatedSession = getCurrentSession();
-    const assistantMsgIndex = updatedSession ? updatedSession.messages.length - 1 : -1;
 
     const currentPrompt = prompt;
     setPrompt('');
