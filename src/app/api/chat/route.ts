@@ -34,9 +34,11 @@ interface UserConfig {
 }
 
 // Image storage directory
+// Development: public/chat-images (served by Next.js static files)
+// Production: use /tmp on Linux/Mac, %TEMP% on Windows
 const IMAGE_DIR = process.env.NODE_ENV === 'production'
-  ? '/tmp/chat-images'
-  : path.join(process.cwd(), 'public/chat-images');
+  ? path.join(process.env.TEMP || process.env.TMP || '/tmp', 'chat-images')
+  : path.join(process.cwd(), 'public', 'chat-images');
 
 // User config file path
 const USER_CONFIG_PATH = path.join(process.cwd(), 'users.json');

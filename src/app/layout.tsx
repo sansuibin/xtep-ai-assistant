@@ -1,6 +1,9 @@
 import type { Metadata } from 'next';
 import './globals.css';
 
+// Prevent Next.js automatic revalidation which causes page flicker every ~1 minute
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: {
     default: '特步AI生图助手 | Xtep AI Image Assistant',
