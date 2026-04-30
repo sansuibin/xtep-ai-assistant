@@ -129,7 +129,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
 // Context
 interface AppContextType {
   state: AppState;
-  login: (username: string) => void;
+  login: (username: string, userData?: { id: string; modelName?: string; provider?: string }) => void;
   logout: () => void;
   openLoginModal: () => void;
   closeLoginModal: () => void;
@@ -150,6 +150,7 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 // Storage keys
 const STORAGE_KEY = 'xtep-ai-app-state';
+const USER_STORAGE_KEY = 'xtep-ai-user';
 
 // Provider
 export function AppProvider({ children }: { children: React.ReactNode }) {
@@ -158,35 +159,86 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Load state from localStorage on mount
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Don't restore user session for security
-        dispatch({
-          type: 'LOAD_STATE',
-          payload: {
-            galleryViewMode: parsed.galleryViewMode || 'timeline',
-          },
-        });
+      // Restore user session
+      const savedUser = localStorage.getItem(USER_STORAGE_KEY);
+      if (savedUser) {
+        const user = JSON.parse(savedUser);
+        dispatch({ type: 'SET_USER', payload: user });
+
+        // Also restore sessions for this user
+        const savedState = localStorage.getItem(STORAGE_KEY);
+        if (savedState) {
+          const parsed = JSON.parse(savedState);
+          dispatch({
+            type: 'LOAD_STATE',
+            payload: {
+              galleryViewMode: parsed.galleryViewMode || 'timeline',
+              sessions: parsed.sessions || [],
+              currentSessionId: parsed.currentSessionId || null,
+              gallery: parsed.gallery || [],
+            },
+          });
+        }
+
+        // Create default session if none exists
+        if (!savedState || !JSON.parse(savedState).sessions?.length) {
+          const sessionId = `session-${Date.now()}`;
+          const session: Session = {
+            id: sessionId,
+            name: '新对话',
+            messages: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+          dispatch({ type: 'ADD_SESSION', payload: session });
+        }
+      } else {
+        // No user, just restore preferences
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          dispatch({
+            type: 'LOAD_STATE',
+            payload: {
+              galleryViewMode: parsed.galleryViewMode || 'timeline',
+            },
+          });
+        }
       }
     } catch {
       // Ignore parse errors
     }
   }, []);
 
-  // Save state to localStorage (exclude sensitive data)
+  // Save state to localStorage whenever it changes
   useEffect(() => {
     try {
       localStorage.setItem(
         STORAGE_KEY,
         JSON.stringify({
           galleryViewMode: state.galleryViewMode,
+          sessions: state.sessions,
+          currentSessionId: state.currentSessionId,
+          gallery: state.gallery,
         })
       );
     } catch {
       // Ignore storage errors
     }
-  }, [state.galleryViewMode]);
+  }, [state.galleryViewMode, state.sessions, state.currentSessionId, state.gallery]);
+
+  // Save user to localStorage
+  useEffect(() => {
+    try {
+      if (state.user) {
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(state.user));
+      } else {
+        localStorage.removeItem(USER_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }, [state.user]);
 
   // Login
   const login = useCallback((username: string, userData?: { id: string; modelName?: string; provider?: string }) => {
@@ -213,6 +265,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Logout
   const logout = useCallback(() => {
+    // Clear all user data from localStorage
+    localStorage.removeItem(USER_STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY);
     dispatch({ type: 'LOGOUT' });
   }, []);
 
