@@ -193,11 +193,23 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
                   <div className="flex-1 min-w-0">
                     {/* Single content bubble for the assistant */}
                     <div className="bg-white rounded-2xl rounded-tl-sm px-5 py-4 shadow-soft">
-                      {/* Thinking state: no content yet */}
+                      {/* Thinking/generating state: no content yet */}
                       {state.isGenerating && !message.content && !message.reasoning && (
                         <div className="flex items-center gap-2 text-sm text-gray-400">
                           <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>正在连接模型...</span>
+                        </div>
+                      )}
+                      {state.isGenerating && message.content === '正在思考...' && !message.reasoning && (
+                        <div className="flex items-center gap-2 text-sm text-gray-400">
+                          <Loader2 className="w-4 h-4 animate-spin" />
                           <span>正在思考...</span>
+                        </div>
+                      )}
+                      {state.isGenerating && message.content === '正在生成图片...' && (
+                        <div className="flex items-center gap-2 text-sm text-gray-400">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>正在生成图片，请耐心等待...</span>
                         </div>
                       )}
 
@@ -215,7 +227,7 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
                       )}
 
                       {/* Main text content - use cleaned text without image references */}
-                      {cleanText && cleanText !== '正在思考...' && (
+                      {cleanText && cleanText !== '正在思考...' && cleanText !== '正在生成图片...' && cleanText !== '正在连接模型...' && (
                         <p className="text-sm text-gray-700 whitespace-pre-wrap">
                           {cleanText}
                         </p>

@@ -143,6 +143,7 @@ function XtepAIApp() {
       let buffer = '';
       let fullText = '';
       let fullReasoning = '';
+      let lastProgressText = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -158,11 +159,23 @@ function XtepAIApp() {
           try {
             const parsed = JSON.parse(line);
 
-            if (parsed.type === 'reasoning') {
+            if (parsed.type === 'status') {
+              // Connection established - show thinking indicator
+              updateMessage(state.currentSessionId!, assistantMsgIndex, {
+                content: '正在思考...',
+                reasoning: '',
+              });
+            } else if (parsed.type === 'reasoning') {
               fullReasoning += parsed.content;
-              // Update the existing assistant message in-place
               updateMessage(state.currentSessionId!, assistantMsgIndex, {
                 content: fullText || '正在思考...',
+                reasoning: fullReasoning,
+              });
+            } else if (parsed.type === 'progress') {
+              // Show progress message during long generation
+              lastProgressText = parsed.content;
+              updateMessage(state.currentSessionId!, assistantMsgIndex, {
+                content: fullText || parsed.content,
                 reasoning: fullReasoning,
               });
             } else if (parsed.type === 'text') {
@@ -195,7 +208,7 @@ function XtepAIApp() {
               if (!finalText && imageUrls.length > 0) {
                 finalText = '生成完成';
               } else if (!finalText && imageUrls.length === 0) {
-                finalText = fullText || '未生成图片';
+                finalText = fullText || lastProgressText || '未生成图片';
               }
 
               // Final update with all images

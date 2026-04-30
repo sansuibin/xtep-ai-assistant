@@ -147,34 +147,47 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
     }
 
-    // Get user config
+    // Get user config for API key
     const user = await getUserById(userId);
     if (!user) {
-      return NextResponse.json({ error: 'User not found or inactive' }, { status: 401 });
+      return NextResponse.json({ error: 'User not found' }, { status: 401 });
     }
 
     const apiKey = user.apiKey || process.env.EASYROUTER_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
         { error: 'API key not configured. Please set EASYROUTER_API_KEY or configure user API key.' },
-        { status: 500 }
+        { status: 400 }
       );
     }
 
     const baseUrl = process.env.EASYROUTER_BASE_URL || 'https://easyrouter.io';
     const model = user.model || 'gemini-3.1-flash-image-preview';
 
-    // Build OpenAI format messages
+    console.log('[chat] Request:', { userId, model, imageSize, aspectRatio, sessionId });
+
+    // Build conversation messages for OpenAI format
     const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
 
-    // Add history
+    // System instruction
+    messages.push({
+      role: 'system',
+      content: `你是特步AI生图助手，专注于服装设计和视觉创意。你可以根据用户描述生成图片。
+当用户要求生成图片时，请直接生成高质量图片。
+图片尺寸偏好：${imageSize}，比例：${aspectRatio}。
+当前会话：${sessionName || '新对话'}`,
+    });
+
+    // Add conversation history
     for (const msg of history) {
+      const role = msg.role === 'user' ? 'user' : 'assistant';
       const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
 
       for (const part of msg.parts) {
         if (part.text) {
           parts.push({ type: 'text', text: part.text });
-        } else if (part.imageUrl) {
+        }
+        if (part.imageUrl) {
           const dataUrl = await imageUrlToDataUrl(part.imageUrl);
           if (dataUrl) {
             parts.push({ type: 'image_url', image_url: { url: dataUrl } });
@@ -183,20 +196,17 @@ export async function POST(request: NextRequest) {
       }
 
       if (parts.length > 0) {
-        const content = parts.length === 1 && parts[0].type === 'text' && parts[0].text
-          ? parts[0].text
-          : parts;
-        messages.push({
-          role: msg.role === 'model' ? 'assistant' : 'user',
-          content,
-        });
+        messages.push({ role, content: parts.length === 1 && parts[0].type === 'text' ? parts[0].text! : parts });
       }
     }
 
-    // Add current prompt
-    messages.push({ role: 'user', content: prompt });
+    // Add current user message
+    messages.push({
+      role: 'user',
+      content: prompt,
+    });
 
-    // Call EasyRouter with streaming (OpenAI format)
+    // Call EasyRouter API with streaming
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -206,39 +216,41 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: 32768,
-        temperature: 1,
-        top_p: 0.95,
         stream: true,
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('EasyRouter API error:', response.status, errorText);
+      console.error('[chat] API error:', response.status, errorText);
       return NextResponse.json(
-        { error: `API call failed: ${response.status} - ${errorText}` },
+        { error: `API error: ${response.status} - ${errorText.substring(0, 200)}` },
         { status: response.status }
       );
     }
 
-    // Process streaming response
+    // Create streaming response
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-
     let reasoningText = '';
     let contentText = '';
-    let imageUrls: string[] = [];
+    let lastProgressTime = Date.now();
+    let receivedAnyContent = false;
 
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          // Send initial status event
+          controller.enqueue(encoder.encode(JSON.stringify({
+            type: 'status',
+            content: '已连接，正在处理...',
+          }) + '\n'));
+
           const reader = response.body?.getReader();
           if (!reader) {
-            controller.close();
-            return;
+            throw new Error('No response body');
           }
 
+          const decoder = new TextDecoder();
           let buffer = '';
 
           while (true) {
@@ -247,73 +259,88 @@ export async function POST(request: NextRequest) {
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
+            buffer = lines.pop() || '';
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || trimmed === 'data: [DONE]') continue;
+              if (!trimmed.startsWith('data: ')) continue;
 
-            const data = trimmed.slice(6);
-            if (data === '[DONE]') continue;
+              const data = trimmed.slice(6);
+              try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices?.[0]?.delta;
+                if (!delta) continue;
 
-            try {
-              const parsed = JSON.parse(data);
-              const delta = parsed.choices?.[0]?.delta;
-              if (!delta) continue;
-
-              // Handle reasoning content (thinking process)
-              if (delta.reasoning_content) {
-                reasoningText += delta.reasoning_content;
-                controller.enqueue(encoder.encode(JSON.stringify({
-                  type: 'reasoning',
-                  content: delta.reasoning_content,
-                }) + '\n'));
-              }
-
-              // Handle main content - accumulate ALL content, don't try to detect images mid-stream
-              if (delta.content) {
-                contentText += delta.content;
-
-                // Only forward text content that is clearly NOT base64 data
-                // Base64 image data is typically very long and contains only A-Za-z0-9+/=
-                const contentStr = delta.content;
-                const isLikelyBase64 = /^[A-Za-z0-9+/=\s]{50,}$/.test(contentStr.trim());
-
-                if (!isLikelyBase64 && !contentStr.includes('data:image')) {
+                // Handle reasoning content (thinking process)
+                if (delta.reasoning_content) {
+                  reasoningText += delta.reasoning_content;
                   controller.enqueue(encoder.encode(JSON.stringify({
-                    type: 'text',
-                    content: contentStr,
+                    type: 'reasoning',
+                    content: delta.reasoning_content,
                   }) + '\n'));
+                  lastProgressTime = Date.now();
+                  receivedAnyContent = true;
                 }
+
+                // Handle main content
+                if (delta.content) {
+                  const contentStr = delta.content;
+
+                  // Check if this looks like base64 data (image content)
+                  const isLikelyBase64 = /^[A-Za-z0-9+/=\s]{50,}$/.test(contentStr.trim());
+
+                  if (isLikelyBase64 || contentStr.includes('data:image')) {
+                    // Accumulate but don't send to frontend
+                    contentText += contentStr;
+
+                    // Send progress events every 5 seconds during base64 download
+                    const now = Date.now();
+                    if (now - lastProgressTime > 5000) {
+                      const elapsedSec = Math.round((now - lastProgressTime) / 1000);
+                      controller.enqueue(encoder.encode(JSON.stringify({
+                        type: 'progress',
+                        content: `正在生成图片...（已接收 ${(contentText.length / 1024).toFixed(0)}KB 数据）`,
+                      }) + '\n'));
+                      lastProgressTime = now;
+                    }
+                  } else {
+                    // Normal text content - forward to frontend
+                    contentText += contentStr;
+                    controller.enqueue(encoder.encode(JSON.stringify({
+                      type: 'text',
+                      content: contentStr,
+                    }) + '\n'));
+                    lastProgressTime = Date.now();
+                    receivedAnyContent = true;
+                  }
+                }
+              } catch {
+                // Skip invalid JSON
               }
-            } catch {
-              // Skip invalid JSON
             }
           }
-        }
 
           // Stream ended - extract images from accumulated content
           console.log('[chat] Stream ended. Total content length:', contentText.length);
-          console.log('[chat] Content preview (first 500 chars):', contentText.substring(0, 500));
           console.log('[chat] Content contains data:image:', contentText.includes('data:image'));
-          console.log('[chat] Content contains base64,:', contentText.includes(';base64,'));
+          console.log('[chat] Content contains ;base64,:', contentText.includes(';base64,'));
 
+          const imageUrls: string[] = [];
           let textWithoutImages = contentText;
 
-          // Extract base64 images from content using a robust approach
-          // Find all occurrences of data:image/...;base64, and extract the base64 data
+          // Extract base64 images from content using string scanning
           const base64Marker = ';base64,';
           let searchPos = 0;
-          const processedRanges: Array<{ start: number; end: number; url: string }> = [];
+          const processedRanges: Array<{ start: number; end: number }> = [];
 
           while (true) {
             const markerIndex = contentText.indexOf(base64Marker, searchPos);
             if (markerIndex === -1) break;
 
-            // Find the start of the data:image/ prefix (go back to find 'data:')
+            // Find the start of the data:image/ prefix
             let dataImageStart = contentText.lastIndexOf('data:image/', markerIndex);
             if (dataImageStart === -1 || dataImageStart < searchPos - 200) {
-              // data:image/ prefix is too far back, skip
               searchPos = markerIndex + base64Marker.length;
               continue;
             }
@@ -322,17 +349,16 @@ export async function POST(request: NextRequest) {
             const mimeStart = dataImageStart + 'data:image/'.length;
             const mimeEnd = contentText.indexOf(';', mimeStart);
             if (mimeEnd !== markerIndex) {
-              // MIME type doesn't match, skip
               searchPos = markerIndex + base64Marker.length;
               continue;
             }
             const mimeType = contentText.substring(mimeStart, mimeEnd);
 
-            // Extract base64 data - find the end of base64 content
+            // Extract base64 data
             const base64Start = markerIndex + base64Marker.length;
             let base64End = base64Start;
 
-            // Skip any leading whitespace/newlines
+            // Skip whitespace
             while (base64End < contentText.length && /\s/.test(contentText[base64End])) {
               base64End++;
             }
@@ -345,16 +371,15 @@ export async function POST(request: NextRequest) {
             const base64Data = contentText.substring(base64Start, base64End).replace(/\s/g, '');
 
             if (base64Data.length < 100) {
-              // Too short to be a real image, skip
               searchPos = base64End;
               continue;
             }
 
-            // Find the full extent of this image reference (including markdown wrapper if any)
+            // Find full extent of image reference (including markdown wrapper)
             let refStart = dataImageStart;
             let refEnd = base64End;
 
-            // Check if wrapped in markdown: ![alt](data:image/...)
+            // Check markdown wrapper: ![alt](data:image/...)
             if (refStart > 0) {
               const beforeRef = contentText.substring(Math.max(0, refStart - 50), refStart);
               const mdMatch = beforeRef.match(/!\[[^\]]*\]\($/);
@@ -363,7 +388,7 @@ export async function POST(request: NextRequest) {
               }
             }
 
-            // Check for closing parenthesis after base64 data
+            // Check for closing parenthesis
             let closeCheck = base64End;
             while (closeCheck < contentText.length && /\s/.test(contentText[closeCheck])) {
               closeCheck++;
@@ -372,7 +397,7 @@ export async function POST(request: NextRequest) {
               refEnd = closeCheck + 1;
             }
 
-            // Skip if this range overlaps with an already processed one
+            // Skip overlapping ranges
             const overlaps = processedRanges.some(r =>
               (refStart >= r.start && refStart < r.end) || (r.start >= refStart && r.start < refEnd)
             );
@@ -384,7 +409,7 @@ export async function POST(request: NextRequest) {
             try {
               const imageUrl = await saveImageToFile(base64Data, sessionId, mimeType);
               imageUrls.push(imageUrl);
-              processedRanges.push({ start: refStart, end: refEnd, url: imageUrl });
+              processedRanges.push({ start: refStart, end: refEnd });
               console.log('[chat] Saved base64 image:', imageUrl, 'size:', base64Data.length, 'type:', mimeType);
             } catch (e) {
               console.error('[chat] Error saving base64 image:', e);
@@ -393,8 +418,7 @@ export async function POST(request: NextRequest) {
             searchPos = refEnd;
           }
 
-          // Also check for HTTP/HTTPS image URLs from the model (not base64)
-          // Pattern: ![alt](https://...) or Image: [https://...]
+          // Also check for HTTP/HTTPS image URLs
           const httpImageRegex = /!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/g;
           let httpMatch;
           while ((httpMatch = httpImageRegex.exec(contentText)) !== null) {
@@ -416,7 +440,9 @@ export async function POST(request: NextRequest) {
           textWithoutImages = textWithoutImages
             .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
             .replace(/Image:\s*\[https?:\/\/[^\]]+\]/g, '')
+            .replace(/Image:\s*\[[^\]]*\]/g, '')
             .replace(/\[图片\d*\]/g, '')
+            .replace(/\n{3,}/g, '\n\n')
             .trim();
 
           console.log('[chat] Extracted', imageUrls.length, 'images');
