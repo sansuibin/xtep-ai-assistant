@@ -129,9 +129,7 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
                     {/* Main text content */}
                     {message.content && message.content !== '正在思考...' && (
                       <p className="text-sm text-gray-700 whitespace-pre-wrap">
-                        {message.images && message.images.length > 0
-                          ? `✨ 生成 ${message.images.length} 张图片`
-                          : message.content}
+                        {message.content}
                       </p>
                     )}
                   </div>

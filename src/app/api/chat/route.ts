@@ -222,8 +222,6 @@ export async function POST(request: NextRequest) {
     let reasoningText = '';
     let contentText = '';
     let imageUrls: string[] = [];
-    let hasImage = false;
-    let inBase64Block = false;
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -242,111 +240,105 @@ export async function POST(request: NextRequest) {
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+          buffer = lines.pop() || '';
 
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
 
-              const data = trimmed.slice(6);
-              if (data === '[DONE]') continue;
+            const data = trimmed.slice(6);
+            if (data === '[DONE]') continue;
 
-              try {
-                const parsed = JSON.parse(data);
-                const delta = parsed.choices?.[0]?.delta;
-                if (!delta) continue;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta;
+              if (!delta) continue;
 
-                // Handle reasoning content (thinking process)
-                if (delta.reasoning_content) {
-                  reasoningText += delta.reasoning_content;
-                  controller.enqueue(encoder.encode(JSON.stringify({
-                    type: 'reasoning',
-                    content: delta.reasoning_content,
-                  }) + '\n'));
-                }
+              // Handle reasoning content (thinking process)
+              if (delta.reasoning_content) {
+                reasoningText += delta.reasoning_content;
+                controller.enqueue(encoder.encode(JSON.stringify({
+                  type: 'reasoning',
+                  content: delta.reasoning_content,
+                }) + '\n'));
+              }
 
-                // Handle main content
-                if (delta.content) {
-                  const contentStr = delta.content;
-                  contentText += contentStr;
+              // Handle main content - accumulate ALL content, don't try to detect images mid-stream
+              if (delta.content) {
+                contentText += delta.content;
 
-                  // Detect if we're entering a base64 image block
-                  if (contentStr.includes('data:image') || contentStr.includes('![image]')) {
-                    inBase64Block = true;
-                  }
+                // Only forward text content that is clearly NOT base64 data
+                // Base64 image data is typically very long and contains only A-Za-z0-9+/=
+                const contentStr = delta.content;
+                const isLikelyBase64 = /^[A-Za-z0-9+/=\s]{50,}$/.test(contentStr.trim());
 
-                  // Detect end of base64 block (closing paren or end of markdown image)
-                  if (inBase64Block && (contentStr.includes(')') || contentStr.includes('.png)') || contentStr.includes('.jpg)'))) {
-                    inBase64Block = false;
-                    continue; // Skip this chunk, image will be extracted later
-                  }
-
-                  // If we're in a base64 block, don't forward raw data to frontend
-                  if (inBase64Block) {
-                    continue;
-                  }
-
-                  // Skip forwarding if this chunk looks like raw base64 data
-                  if (/^[A-Za-z0-9+/=\s]+$/.test(contentStr) && contentStr.length > 100) {
-                    continue;
-                  }
-
-                  // Forward normal text to frontend
+                if (!isLikelyBase64 && !contentStr.includes('data:image')) {
                   controller.enqueue(encoder.encode(JSON.stringify({
                     type: 'text',
                     content: contentStr,
                   }) + '\n'));
                 }
-              } catch {
-                // Skip invalid JSON
               }
+            } catch {
+              // Skip invalid JSON
             }
           }
+        }
 
           // Stream ended - extract images from accumulated content
+          console.log('[chat] Stream ended. Total content length:', contentText.length);
+          console.log('[chat] Content preview (first 500 chars):', contentText.substring(0, 500));
+
           let textWithoutImages = contentText;
 
-          // Parse markdown image patterns: ![image](data:image/png;base64,...)
-          const imageRegex = /!\[image\]\(data:image\/[^;]+;base64,([^)]+)\)/g;
+          // Pattern 1: Markdown image with base64: ![alt](data:image/xxx;base64,...)
+          const mdBase64Regex = /!\[[^\]]*\]\(data:image\/[^;]+;base64,([^)]+)\)/g;
           let match;
-
-          while ((match = imageRegex.exec(contentText)) !== null) {
+          while ((match = mdBase64Regex.exec(contentText)) !== null) {
             const base64Data = match[1];
             try {
               const imageUrl = await saveImageToFile(base64Data, sessionId);
               imageUrls.push(imageUrl);
-              hasImage = true;
-              textWithoutImages = textWithoutImages.replace(match[0], `[图片${imageUrls.length}]`);
+              console.log('[chat] Saved markdown base64 image:', imageUrl);
+              textWithoutImages = textWithoutImages.replace(match[0], '');
             } catch (e) {
-              console.error('Error saving image:', e);
+              console.error('[chat] Error saving markdown base64 image:', e);
             }
           }
 
-          // Also check for direct base64 in content without markdown wrapper
-          const directBase64Regex = /data:image\/[^;]+;base64,([A-Za-z0-9+/=]{100,})/g;
+          // Pattern 2: Direct data:image URL without markdown wrapper
+          const directBase64Regex = /data:image\/([^;]+);base64,([A-Za-z0-9+/=]+)/g;
           while ((match = directBase64Regex.exec(contentText)) !== null) {
-            // Skip if already processed as markdown image
-            if (contentText.includes(`![image](${match[0]})`)) continue;
-
-            const base64Data = match[1];
+            const base64Data = match[2];
+            // Skip if already processed (check by comparing base64 prefix)
+            if (imageUrls.length > 0 && contentText.indexOf(match[0]) > contentText.indexOf('![image]')) {
+              // Check if this base64 data was already inside a markdown image we processed
+              continue;
+            }
             try {
               const imageUrl = await saveImageToFile(base64Data, sessionId);
-              // Only add unique images (avoid duplicates from thinking)
               if (!imageUrls.includes(imageUrl)) {
                 imageUrls.push(imageUrl);
-                hasImage = true;
+                console.log('[chat] Saved direct base64 image:', imageUrl);
               }
             } catch (e) {
-              console.error('Error saving image:', e);
+              console.error('[chat] Error saving direct base64 image:', e);
             }
           }
 
-          // Clean up text - remove base64 data strings
-          textWithoutImages = textWithoutImages.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{100,}/g, '[图片]');
-          // Also remove any dangling markdown image syntax
-          textWithoutImages = textWithoutImages.replace(/!\[image\]\(\[图片\]\)/g, '[图片]');
+          // Clean up remaining base64 references in text
+          textWithoutImages = textWithoutImages.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{50,}/g, '');
+          // Clean up empty markdown image syntax
+          textWithoutImages = textWithoutImages.replace(/!\[[^\]]*\]\(\s*\)/g, '');
+          // Clean up Image: [...] patterns that may contain sandbox URLs
+          textWithoutImages = textWithoutImages.replace(/Image:\s*\[https?:\/\/[^\]]+\]/g, '');
+          // Clean up standalone markdown images with empty or broken URLs
+          textWithoutImages = textWithoutImages.replace(/!\[[^\]]*\]\(\s*\[?[^\)]*\]?\)/g, '');
           // Trim whitespace
           textWithoutImages = textWithoutImages.trim();
+
+          console.log('[chat] Extracted', imageUrls.length, 'images');
+          console.log('[chat] Final text (first 300 chars):', textWithoutImages.substring(0, 300));
 
           // Send final summary
           controller.enqueue(encoder.encode(JSON.stringify({
@@ -354,14 +346,14 @@ export async function POST(request: NextRequest) {
             data: {
               text: textWithoutImages,
               images: imageUrls,
-              hasImage,
+              hasImage: imageUrls.length > 0,
               reasoning: reasoningText,
             },
           }) + '\n'));
 
           controller.close();
         } catch (error) {
-          console.error('Stream processing error:', error);
+          console.error('[chat] Stream processing error:', error);
           controller.enqueue(encoder.encode(JSON.stringify({
             type: 'error',
             content: error instanceof Error ? error.message : 'Stream processing error',

@@ -173,8 +173,24 @@ function XtepAIApp() {
               });
             } else if (parsed.type === 'done') {
               const doneData = parsed.data;
-              const finalText = doneData.text || fullText;
+              // Always prefer doneData.text as it has images stripped out
+              // Only fall back to fullText if doneData.text is empty
+              let finalText = doneData.text || '';
               const imageUrls: string[] = doneData.images || [];
+
+              // Clean up any remaining image references in the text
+              finalText = finalText
+                .replace(/Image:\s*\[https?:\/\/[^\]]+\]/g, '')
+                .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+                .replace(/\[图片\d*\]/g, '')
+                .trim();
+
+              // If we have images but no meaningful text, show a summary
+              if (!finalText && imageUrls.length > 0) {
+                finalText = '生成完成';
+              } else if (!finalText && imageUrls.length === 0) {
+                finalText = fullText || '未生成图片';
+              }
 
               // Final update with all images
               const images: GeneratedImage[] = imageUrls.map((url: string) => ({
