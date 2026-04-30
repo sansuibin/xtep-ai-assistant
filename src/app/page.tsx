@@ -154,10 +154,12 @@ function XtepAIApp() {
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (!line.trim()) continue;
+          const trimmedLine = line.trim();
+          // Skip empty lines and SSE comment lines (keepalive)
+          if (!trimmedLine || trimmedLine.startsWith(':')) continue;
 
           try {
-            const parsed = JSON.parse(line);
+            const parsed = JSON.parse(trimmedLine);
 
             if (parsed.type === 'status') {
               // Connection established - show thinking indicator
@@ -197,12 +199,34 @@ function XtepAIApp() {
               let finalText = doneData.text || '';
               const imageUrls: string[] = doneData.images || [];
 
+              // Also try to extract image URLs from fullText as fallback
+              if (imageUrls.length === 0) {
+                const imgMatch = fullText.match(/Image:\s*\[(https?:\/\/[^\]]+)\]/);
+                if (imgMatch) {
+                  imageUrls.push(imgMatch[1]);
+                }
+                // Also try markdown format
+                const mdImgMatch = fullText.match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/);
+                if (mdImgMatch && !imageUrls.includes(mdImgMatch[1])) {
+                  imageUrls.push(mdImgMatch[1]);
+                }
+              }
+
               // Clean up any remaining image references in the text
               finalText = finalText
                 .replace(/Image:\s*\[https?:\/\/[^\]]+\]/g, '')
                 .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
                 .replace(/\[图片\d*\]/g, '')
                 .trim();
+
+              // Also clean fullText as fallback
+              if (!finalText && fullText) {
+                finalText = fullText
+                  .replace(/Image:\s*\[https?:\/\/[^\]]+\]/g, '')
+                  .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+                  .replace(/\[图片\d*\]/g, '')
+                  .trim();
+              }
 
               // If we have images but no meaningful text, show a summary
               if (!finalText && imageUrls.length > 0) {

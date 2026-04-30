@@ -236,9 +236,22 @@ export async function POST(request: NextRequest) {
     let lastProgressTime = Date.now();
     let receivedAnyContent = false;
 
+    // Keepalive timer - send SSE comment every 10 seconds to prevent proxy timeout
+    let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          // Start keepalive heartbeat
+          keepaliveTimer = setInterval(() => {
+            try {
+              // SSE comment line (starts with ':') - browsers/clients should ignore
+              controller.enqueue(encoder.encode(': keepalive\n\n'));
+            } catch {
+              // Controller may be closed
+            }
+          }, 10000);
+
           // Send initial status event
           controller.enqueue(encoder.encode(JSON.stringify({
             type: 'status',
@@ -297,7 +310,6 @@ export async function POST(request: NextRequest) {
                     // Send progress events every 5 seconds during base64 download
                     const now = Date.now();
                     if (now - lastProgressTime > 5000) {
-                      const elapsedSec = Math.round((now - lastProgressTime) / 1000);
                       controller.enqueue(encoder.encode(JSON.stringify({
                         type: 'progress',
                         content: `正在生成图片...（已接收 ${(contentText.length / 1024).toFixed(0)}KB 数据）`,
@@ -460,13 +472,21 @@ export async function POST(request: NextRequest) {
             },
           }) + '\n'));
 
+          // Stop keepalive
+          if (keepaliveTimer) clearInterval(keepaliveTimer);
           controller.close();
         } catch (error) {
+          // Stop keepalive on error too
+          if (keepaliveTimer) clearInterval(keepaliveTimer);
           console.error('[chat] Stream processing error:', error);
-          controller.enqueue(encoder.encode(JSON.stringify({
-            type: 'error',
-            content: error instanceof Error ? error.message : 'Stream processing error',
-          }) + '\n'));
+          try {
+            controller.enqueue(encoder.encode(JSON.stringify({
+              type: 'error',
+              content: error instanceof Error ? error.message : 'Stream processing error',
+            }) + '\n'));
+          } catch {
+            // Controller may already be closed
+          }
           controller.close();
         }
       },

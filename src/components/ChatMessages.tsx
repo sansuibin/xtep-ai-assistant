@@ -54,12 +54,11 @@ function ReasoningBlock({ reasoning, isGenerating }: { reasoning: string; isGene
  */
 function extractImageUrlsFromText(text: string): { cleanText: string; urls: string[] } {
   const urls: string[] = [];
-
-  // Pattern 1: Image: [url] or 图片: [url]
-  const imgRefRegex = /(?:Image|图片)\s*[:：]\s*\[([^\]]+)\]/g;
   let match;
   let cleanText = text;
 
+  // Pattern 1: Image: [url] or 图片: [url]
+  const imgRefRegex = /(?:Image|图片)\s*[:：]\s*\[([^\]]+)\]/g;
   while ((match = imgRefRegex.exec(text)) !== null) {
     const url = match[1].trim();
     if (url.startsWith('http') || url.startsWith('/')) {
@@ -80,7 +79,7 @@ function extractImageUrlsFromText(text: string): { cleanText: string; urls: stri
     cleanText = cleanText.replace(match[0], '');
   }
 
-  // Pattern 3: Standalone URLs to image files (not already captured)
+  // Pattern 3: Standalone URLs to image files (including query params like sandbox proxy URLs)
   const standaloneUrlRegex = /(?:^|\s)(https?:\/\/[^\s<>]+\.(?:png|jpg|jpeg|webp|gif)(?:\?[^\s<>]*)?)/gi;
   while ((match = standaloneUrlRegex.exec(text)) !== null) {
     const url = match[1].trim();
@@ -88,6 +87,16 @@ function extractImageUrlsFromText(text: string): { cleanText: string; urls: stri
       urls.push(url);
     }
     cleanText = cleanText.replace(match[0], '');
+  }
+
+  // Pattern 4: Sandbox proxy URLs (contain file_path= with image extension)
+  const sandboxUrlRegex = /(https?:\/\/[^\s<>]*file_path=[^\s<>]*\.(?:png|jpg|jpeg|webp|gif)[^\s<>]*)/gi;
+  while ((match = sandboxUrlRegex.exec(text)) !== null) {
+    const url = match[1].trim();
+    if (!urls.includes(url)) {
+      urls.push(url);
+    }
+    cleanText = cleanText.replace(url, '');
   }
 
   // Clean up leftover artifacts
@@ -212,6 +221,12 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
                           <span>正在生成图片，请耐心等待...</span>
                         </div>
                       )}
+                      {state.isGenerating && message.content && message.content.startsWith('正在生成图片') && message.content !== '正在生成图片...' && (
+                        <div className="flex items-center gap-2 text-sm text-gray-400">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>{message.content}</span>
+                        </div>
+                      )}
 
                       {/* Reasoning block - shown once */}
                       {(message.reasoning || (state.isGenerating && !message.content)) && (
@@ -227,7 +242,7 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
                       )}
 
                       {/* Main text content - use cleaned text without image references */}
-                      {cleanText && cleanText !== '正在思考...' && cleanText !== '正在生成图片...' && cleanText !== '正在连接模型...' && (
+                      {cleanText && cleanText !== '正在思考...' && cleanText !== '正在生成图片...' && cleanText !== '正在连接模型...' && !cleanText.startsWith('正在生成图片') && (
                         <p className="text-sm text-gray-700 whitespace-pre-wrap">
                           {cleanText}
                         </p>
