@@ -114,15 +114,22 @@ async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
 }
 
 // Save base64 image to file, return public URL
-async function saveImageToFile(base64Data: string, sessionId: string): Promise<string> {
+async function saveImageToFile(base64Data: string, sessionId: string, mimeType?: string): Promise<string> {
   await ensureImageDir();
 
-  const filename = `${sessionId}-${generateId()}.png`;
+  const ext = mimeType === 'jpeg' || mimeType === 'jpg' ? 'jpg'
+    : mimeType === 'webp' ? 'webp'
+    : mimeType === 'gif' ? 'gif'
+    : 'png';
+  const filename = `${sessionId}-${generateId()}.${ext}`;
   const filepath = path.join(IMAGE_DIR, filename);
   const buffer = Buffer.from(base64Data, 'base64');
 
+  console.log('[chat] Saving image:', filename, 'size:', buffer.length, 'bytes');
+
   await writeFile(filepath, buffer);
 
+  // Return URL path accessible from browser
   if (process.env.NODE_ENV === 'production') {
     return `/api/images/${filename}`;
   } else {
@@ -288,56 +295,132 @@ export async function POST(request: NextRequest) {
           // Stream ended - extract images from accumulated content
           console.log('[chat] Stream ended. Total content length:', contentText.length);
           console.log('[chat] Content preview (first 500 chars):', contentText.substring(0, 500));
+          console.log('[chat] Content contains data:image:', contentText.includes('data:image'));
+          console.log('[chat] Content contains base64,:', contentText.includes(';base64,'));
 
           let textWithoutImages = contentText;
 
-          // Pattern 1: Markdown image with base64: ![alt](data:image/xxx;base64,...)
-          const mdBase64Regex = /!\[[^\]]*\]\(data:image\/[^;]+;base64,([^)]+)\)/g;
-          let match;
-          while ((match = mdBase64Regex.exec(contentText)) !== null) {
-            const base64Data = match[1];
-            try {
-              const imageUrl = await saveImageToFile(base64Data, sessionId);
-              imageUrls.push(imageUrl);
-              console.log('[chat] Saved markdown base64 image:', imageUrl);
-              textWithoutImages = textWithoutImages.replace(match[0], '');
-            } catch (e) {
-              console.error('[chat] Error saving markdown base64 image:', e);
-            }
-          }
+          // Extract base64 images from content using a robust approach
+          // Find all occurrences of data:image/...;base64, and extract the base64 data
+          const base64Marker = ';base64,';
+          let searchPos = 0;
+          const processedRanges: Array<{ start: number; end: number; url: string }> = [];
 
-          // Pattern 2: Direct data:image URL without markdown wrapper
-          const directBase64Regex = /data:image\/([^;]+);base64,([A-Za-z0-9+/=]+)/g;
-          while ((match = directBase64Regex.exec(contentText)) !== null) {
-            const base64Data = match[2];
-            // Skip if already processed (check by comparing base64 prefix)
-            if (imageUrls.length > 0 && contentText.indexOf(match[0]) > contentText.indexOf('![image]')) {
-              // Check if this base64 data was already inside a markdown image we processed
+          while (true) {
+            const markerIndex = contentText.indexOf(base64Marker, searchPos);
+            if (markerIndex === -1) break;
+
+            // Find the start of the data:image/ prefix (go back to find 'data:')
+            let dataImageStart = contentText.lastIndexOf('data:image/', markerIndex);
+            if (dataImageStart === -1 || dataImageStart < searchPos - 200) {
+              // data:image/ prefix is too far back, skip
+              searchPos = markerIndex + base64Marker.length;
               continue;
             }
-            try {
-              const imageUrl = await saveImageToFile(base64Data, sessionId);
-              if (!imageUrls.includes(imageUrl)) {
-                imageUrls.push(imageUrl);
-                console.log('[chat] Saved direct base64 image:', imageUrl);
+
+            // Find the MIME type
+            const mimeStart = dataImageStart + 'data:image/'.length;
+            const mimeEnd = contentText.indexOf(';', mimeStart);
+            if (mimeEnd !== markerIndex) {
+              // MIME type doesn't match, skip
+              searchPos = markerIndex + base64Marker.length;
+              continue;
+            }
+            const mimeType = contentText.substring(mimeStart, mimeEnd);
+
+            // Extract base64 data - find the end of base64 content
+            const base64Start = markerIndex + base64Marker.length;
+            let base64End = base64Start;
+
+            // Skip any leading whitespace/newlines
+            while (base64End < contentText.length && /\s/.test(contentText[base64End])) {
+              base64End++;
+            }
+
+            // Collect base64 characters
+            while (base64End < contentText.length && /[A-Za-z0-9+/=]/.test(contentText[base64End])) {
+              base64End++;
+            }
+
+            const base64Data = contentText.substring(base64Start, base64End).replace(/\s/g, '');
+
+            if (base64Data.length < 100) {
+              // Too short to be a real image, skip
+              searchPos = base64End;
+              continue;
+            }
+
+            // Find the full extent of this image reference (including markdown wrapper if any)
+            let refStart = dataImageStart;
+            let refEnd = base64End;
+
+            // Check if wrapped in markdown: ![alt](data:image/...)
+            if (refStart > 0) {
+              const beforeRef = contentText.substring(Math.max(0, refStart - 50), refStart);
+              const mdMatch = beforeRef.match(/!\[[^\]]*\]\($/);
+              if (mdMatch) {
+                refStart = refStart - mdMatch[0].length;
               }
+            }
+
+            // Check for closing parenthesis after base64 data
+            let closeCheck = base64End;
+            while (closeCheck < contentText.length && /\s/.test(contentText[closeCheck])) {
+              closeCheck++;
+            }
+            if (closeCheck < contentText.length && contentText[closeCheck] === ')') {
+              refEnd = closeCheck + 1;
+            }
+
+            // Skip if this range overlaps with an already processed one
+            const overlaps = processedRanges.some(r =>
+              (refStart >= r.start && refStart < r.end) || (r.start >= refStart && r.start < refEnd)
+            );
+            if (overlaps) {
+              searchPos = refEnd;
+              continue;
+            }
+
+            try {
+              const imageUrl = await saveImageToFile(base64Data, sessionId, mimeType);
+              imageUrls.push(imageUrl);
+              processedRanges.push({ start: refStart, end: refEnd, url: imageUrl });
+              console.log('[chat] Saved base64 image:', imageUrl, 'size:', base64Data.length, 'type:', mimeType);
             } catch (e) {
-              console.error('[chat] Error saving direct base64 image:', e);
+              console.error('[chat] Error saving base64 image:', e);
+            }
+
+            searchPos = refEnd;
+          }
+
+          // Also check for HTTP/HTTPS image URLs from the model (not base64)
+          // Pattern: ![alt](https://...) or Image: [https://...]
+          const httpImageRegex = /!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/g;
+          let httpMatch;
+          while ((httpMatch = httpImageRegex.exec(contentText)) !== null) {
+            const url = httpMatch[1];
+            if (!imageUrls.includes(url)) {
+              imageUrls.push(url);
+              console.log('[chat] Found HTTP image URL:', url);
             }
           }
 
-          // Clean up remaining base64 references in text
-          textWithoutImages = textWithoutImages.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]{50,}/g, '');
-          // Clean up empty markdown image syntax
-          textWithoutImages = textWithoutImages.replace(/!\[[^\]]*\]\(\s*\)/g, '');
-          // Clean up Image: [...] patterns that may contain sandbox URLs
-          textWithoutImages = textWithoutImages.replace(/Image:\s*\[https?:\/\/[^\]]+\]/g, '');
-          // Clean up standalone markdown images with empty or broken URLs
-          textWithoutImages = textWithoutImages.replace(/!\[[^\]]*\]\(\s*\[?[^\)]*\]?\)/g, '');
-          // Trim whitespace
-          textWithoutImages = textWithoutImages.trim();
+          // Remove all image references from text
+          for (const range of processedRanges) {
+            textWithoutImages = textWithoutImages.replace(
+              contentText.substring(range.start, range.end),
+              ''
+            );
+          }
+          // Clean up remaining patterns
+          textWithoutImages = textWithoutImages
+            .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+            .replace(/Image:\s*\[https?:\/\/[^\]]+\]/g, '')
+            .replace(/\[图片\d*\]/g, '')
+            .trim();
 
           console.log('[chat] Extracted', imageUrls.length, 'images');
+          console.log('[chat] Image URLs:', imageUrls);
           console.log('[chat] Final text (first 300 chars):', textWithoutImages.substring(0, 300));
 
           // Send final summary

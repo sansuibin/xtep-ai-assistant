@@ -173,6 +173,12 @@ function XtepAIApp() {
               });
             } else if (parsed.type === 'done') {
               const doneData = parsed.data;
+              console.log('[frontend] Done event received:', {
+                textLength: doneData.text?.length,
+                imagesCount: doneData.images?.length,
+                images: doneData.images,
+                hasImage: doneData.hasImage,
+              });
               // Always prefer doneData.text as it has images stripped out
               // Only fall back to fullText if doneData.text is empty
               let finalText = doneData.text || '';
@@ -205,9 +211,10 @@ function XtepAIApp() {
                 timestamp: Date.now(),
               }));
 
+              console.log('[frontend] Updating message at index', assistantMsgIndex, 'with', images.length, 'images');
               updateMessage(state.currentSessionId!, assistantMsgIndex, {
                 content: finalText || (images.length > 0 ? '生成完成' : '未生成图片'),
-                images: images.length > 0 ? images : undefined,
+                images: images,
                 reasoning: doneData.reasoning || fullReasoning,
               });
 
