@@ -34,6 +34,7 @@ type AppAction =
   | { type: 'DELETE_SESSION'; payload: string }
   | { type: 'SET_CURRENT_SESSION'; payload: string | null }
   | { type: 'ADD_MESSAGE'; payload: { sessionId: string; message: Message } }
+  | { type: 'UPDATE_MESSAGE'; payload: { sessionId: string; messageIndex: number; updates: Partial<Message> } }
   | { type: 'ADD_IMAGES'; payload: GeneratedImage[] }
   | { type: 'DELETE_IMAGES_BY_SESSION'; payload: string }
   | { type: 'SET_GALLERY_VIEW_MODE'; payload: 'timeline' | 'grouped' }
@@ -99,6 +100,23 @@ function appReducer(state: AppState, action: AppAction): AppState {
             : s
         ),
       };
+    case 'UPDATE_MESSAGE':
+      return {
+        ...state,
+        sessions: state.sessions.map((s) =>
+          s.id === action.payload.sessionId
+            ? {
+                ...s,
+                messages: s.messages.map((msg, idx) =>
+                  idx === action.payload.messageIndex
+                    ? { ...msg, ...action.payload.updates }
+                    : msg
+                ),
+                updatedAt: Date.now(),
+              }
+            : s
+        ),
+      };
     case 'ADD_IMAGES':
       return { ...state, gallery: [...state.gallery, ...action.payload] };
     case 'DELETE_IMAGES_BY_SESSION':
@@ -138,6 +156,7 @@ interface AppContextType {
   deleteSession: (id: string) => void;
   selectSession: (id: string) => void;
   addMessage: (sessionId: string, message: Omit<Message, 'id' | 'timestamp'>) => void;
+  updateMessage: (sessionId: string, messageIndex: number, updates: Partial<Message>) => void;
   addGeneratedImages: (images: GeneratedImage[]) => void;
   setGalleryViewMode: (mode: 'timeline' | 'grouped') => void;
   openImagePreview: (image: GeneratedImage) => void;
@@ -322,6 +341,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  // Update message (for streaming updates)
+  const updateMessage = useCallback(
+    (sessionId: string, messageIndex: number, updates: Partial<Message>) => {
+      dispatch({ type: 'UPDATE_MESSAGE', payload: { sessionId, messageIndex, updates } });
+    },
+    []
+  );
+
   // Add generated images
   const addGeneratedImages = useCallback((images: GeneratedImage[]) => {
     dispatch({ type: 'ADD_IMAGES', payload: images });
@@ -363,6 +390,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     deleteSession,
     selectSession,
     addMessage,
+    updateMessage,
     addGeneratedImages,
     setGalleryViewMode,
     openImagePreview,

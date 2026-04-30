@@ -1,12 +1,48 @@
 'use client';
 
+import { useState } from 'react';
 import { useApp } from '@/contexts/AppContext';
 import { Message, GenerationParams, RESOLUTION_MAP, ASPECT_RATIO_MAP } from '@/types';
 import { formatDate } from '@/lib/utils';
-import { Image } from 'lucide-react';
+import { Image, ChevronDown, ChevronRight, Brain, Loader2 } from 'lucide-react';
 
 interface ChatMessagesProps {
   messages: Message[];
+}
+
+function ReasoningBlock({ reasoning, isGenerating }: { reasoning: string; isGenerating: boolean }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!reasoning && !isGenerating) return null;
+
+  return (
+    <div className="mb-3">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-500 transition-colors"
+      >
+        {isExpanded ? (
+          <ChevronDown className="w-3.5 h-3.5" />
+        ) : (
+          <ChevronRight className="w-3.5 h-3.5" />
+        )}
+        <Brain className="w-3.5 h-3.5" />
+        {isGenerating && !reasoning ? (
+          <span className="flex items-center gap-1">
+            思考中
+            <Loader2 className="w-3 h-3 animate-spin" />
+          </span>
+        ) : (
+          <span>思考过程</span>
+        )}
+      </button>
+      {isExpanded && reasoning && (
+        <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-100 text-xs text-gray-500 whitespace-pre-wrap max-h-60 overflow-y-auto leading-relaxed">
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ChatMessages({ messages }: ChatMessagesProps) {
@@ -68,11 +104,46 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
                   </svg>
                 </div>
                 <div className="flex-1">
-                  <div className="bg-white rounded-2xl rounded-tl-sm px-5 py-4 shadow-soft">
-                    <p className="text-sm text-gray-700">
-                      ✨ 生成 {message.images?.length || 0} 张 · {message.params && formatParams(message.params)}
-                    </p>
-                  </div>
+                  {/* Thinking indicator when no content yet */}
+                  {state.isGenerating && !message.content && !message.reasoning && (
+                    <div className="bg-white rounded-2xl rounded-tl-sm px-5 py-4 shadow-soft">
+                      <div className="flex items-center gap-2 text-sm text-gray-400">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>正在思考...</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Reasoning block */}
+                  {(message.reasoning || (state.isGenerating && !message.content)) && (
+                    <div className="bg-white rounded-2xl rounded-tl-sm px-5 py-4 shadow-soft mb-2">
+                      <ReasoningBlock
+                        reasoning={message.reasoning || ''}
+                        isGenerating={state.isGenerating}
+                      />
+                    </div>
+                  )}
+
+                  {/* Main content */}
+                  {message.content && message.content !== '正在思考...' && (
+                    <div className="bg-white rounded-2xl rounded-tl-sm px-5 py-4 shadow-soft">
+                      {/* Show reasoning inside content block if there's also content */}
+                      {message.reasoning && (
+                        <div className="mb-3">
+                          <ReasoningBlock
+                            reasoning={message.reasoning}
+                            isGenerating={state.isGenerating}
+                          />
+                          <div className="border-t border-gray-100 pt-3" />
+                        </div>
+                      )}
+                      <p className="text-sm text-gray-700 whitespace-pre-wrap">
+                        {message.images && message.images.length > 0
+                          ? `✨ 生成 ${message.images.length} 张图片`
+                          : message.content}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 

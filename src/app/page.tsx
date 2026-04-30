@@ -12,39 +12,12 @@ import { ImagePreviewModal } from '@/components/ImagePreviewModal';
 import {
   GeneratedImage,
   GenerationParams,
-  RESOLUTION_MAP,
-  ASPECT_RATIO_MAP,
 } from '@/types';
 import { generateId } from '@/lib/utils';
 
-// Helper function to generate mock images
-function generateMockImages(
-  prompt: string,
-  params: GenerationParams,
-  sessionName: string,
-  sessionId: string
-): GeneratedImage[] {
-  const resolution = RESOLUTION_MAP[params.resolution];
-  const ratio = ASPECT_RATIO_MAP[params.aspectRatio];
-  const width = resolution;
-  const height = Math.round(resolution * (ratio.height / ratio.width));
-
-  return Array.from({ length: params.count }, (_, i) => ({
-    id: generateId(),
-    url: `https://picsum.photos/${width}/${height}?random=${Date.now()}-${i}`,
-    width,
-    height,
-    prompt,
-    sessionId,
-    sessionName,
-    params,
-    timestamp: Date.now(),
-  }));
-}
-
 // Main App Component
 function XtepAIApp() {
-  const { state, getCurrentSession, addMessage, addGeneratedImages, setGenerating } = useApp();
+  const { state, getCurrentSession, addMessage, updateMessage, addGeneratedImages, setGenerating } = useApp();
   const [prompt, setPrompt] = useState('');
 
   // Handle example prompt selection
@@ -52,7 +25,7 @@ function XtepAIApp() {
     setPrompt(examplePrompt);
   };
 
-  // Generate images using Gemini multimodal model
+  // Generate images using Gemini multimodal model (streaming)
   const handleGenerate = async () => {
     if (!prompt.trim() || !state.user || !state.currentSessionId) return;
 
@@ -72,6 +45,20 @@ function XtepAIApp() {
       params,
     });
 
+    // Add placeholder assistant message for streaming
+    addMessage(state.currentSessionId, {
+      role: 'assistant',
+      content: '',
+      params,
+      images: [],
+      reasoning: '',
+    });
+
+    // Get the index of the assistant message we just added
+    const updatedSession = getCurrentSession();
+    const assistantMsgIndex = updatedSession ? updatedSession.messages.length - 1 : -1;
+
+    const currentPrompt = prompt;
     setPrompt('');
     setGenerating(true);
 
@@ -85,7 +72,7 @@ function XtepAIApp() {
         ],
       }));
 
-      // Call new multimodal chat API
+      // Call streaming chat API
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -93,7 +80,7 @@ function XtepAIApp() {
         },
         body: JSON.stringify({
           userId: state.user.id,
-          prompt: prompt,
+          prompt: currentPrompt,
           sessionId: state.currentSessionId,
           sessionName: session.name,
           history: history,
@@ -102,51 +89,95 @@ function XtepAIApp() {
         }),
       });
 
-      const data = await response.json();
-
-      if (data.success) {
-        // Add assistant message
-        addMessage(state.currentSessionId, {
-          role: 'assistant',
-          content: data.response.text || '生成完成',
-          params,
-          images: data.response.images?.map((url: string, i: number) => ({
-            id: generateId(),
-            url,
-            width: 1024,
-            height: 1024,
-            prompt: prompt,
-            sessionId: state.currentSessionId,
-            sessionName: session.name,
-            params,
-            timestamp: Date.now(),
-          })) || [],
-        });
-
-        // Add to gallery
-        if (data.response.images?.length > 0) {
-          addGeneratedImages(data.response.images.map((url: string, i: number) => ({
-            id: generateId(),
-            url,
-            width: 1024,
-            height: 1024,
-            prompt: prompt,
-            sessionId: state.currentSessionId,
-            sessionName: session.name,
-            params,
-            timestamp: Date.now(),
-          })));
+      if (!response.ok) {
+        let errorMsg = 'API 调用失败';
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData.error || errorMsg;
+        } catch {
+          // ignore parse error
         }
-      } else {
-        throw new Error(data.error || '生成失败');
+        throw new Error(errorMsg);
+      }
+
+      // Process streaming response
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response stream');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullText = '';
+      let fullReasoning = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          try {
+            const parsed = JSON.parse(line);
+
+            if (parsed.type === 'reasoning') {
+              fullReasoning += parsed.content;
+              // Update the existing assistant message in-place
+              updateMessage(state.currentSessionId!, assistantMsgIndex, {
+                content: fullText || '正在思考...',
+                reasoning: fullReasoning,
+              });
+            } else if (parsed.type === 'text') {
+              fullText += parsed.content;
+              updateMessage(state.currentSessionId!, assistantMsgIndex, {
+                content: fullText,
+                reasoning: fullReasoning,
+              });
+            } else if (parsed.type === 'done') {
+              const doneData = parsed.data;
+              const finalText = doneData.text || fullText;
+              const imageUrls: string[] = doneData.images || [];
+
+              // Final update with all images
+              const images: GeneratedImage[] = imageUrls.map((url: string) => ({
+                id: generateId(),
+                url,
+                width: 1024,
+                height: 1024,
+                prompt: currentPrompt,
+                sessionId: state.currentSessionId!,
+                sessionName: session.name,
+                params,
+                timestamp: Date.now(),
+              }));
+
+              updateMessage(state.currentSessionId!, assistantMsgIndex, {
+                content: finalText || (images.length > 0 ? '生成完成' : '未生成图片'),
+                images: images.length > 0 ? images : undefined,
+                reasoning: doneData.reasoning || fullReasoning,
+              });
+
+              // Add to gallery
+              if (images.length > 0) {
+                addGeneratedImages(images);
+              }
+            } else if (parsed.type === 'error') {
+              throw new Error(parsed.content || '流式响应错误');
+            }
+          } catch (parseError) {
+            // Skip non-JSON lines
+          }
+        }
       }
     } catch (error) {
       console.error('Generation error:', error);
-      // Fallback: show error message
-      addMessage(state.currentSessionId, {
-        role: 'assistant',
+      // Update the assistant message with error
+      updateMessage(state.currentSessionId!, assistantMsgIndex, {
         content: `生成失败: ${error instanceof Error ? error.message : '请检查 API 配置'}`,
-        params,
+        reasoning: undefined,
       });
     } finally {
       setGenerating(false);

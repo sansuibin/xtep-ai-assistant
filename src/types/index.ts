@@ -22,6 +22,7 @@ export interface Message {
   content: string;
   params?: GenerationParams;
   images?: GeneratedImage[];
+  reasoning?: string;
   timestamp: number;
 }
 
