@@ -13,7 +13,7 @@ interface UserConfig {
 }
 
 const USER_CONFIG_PATH = path.join(
-  process.env.COZE_WORKSPACE_PATH || '/workspace/projects', 
+  process.cwd(), 
   'users.json'
 );
 

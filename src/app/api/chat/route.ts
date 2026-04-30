@@ -36,11 +36,11 @@ interface UserConfig {
 // Image storage directory
 const IMAGE_DIR = process.env.NODE_ENV === 'production' 
   ? '/tmp/chat-images' 
-  : path.join(process.env.COZE_WORKSPACE_PATH || '/workspace/projects', 'public/chat-images');
+  : path.join(process.cwd(), 'public/chat-images');
 
 // User config file path
 const USER_CONFIG_PATH = path.join(
-  process.env.COZE_WORKSPACE_PATH || '/workspace/projects', 
+  process.cwd(), 
   'users.json'
 );
 
