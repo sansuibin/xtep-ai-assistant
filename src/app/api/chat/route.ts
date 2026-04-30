@@ -214,7 +214,6 @@ export async function POST(request: NextRequest) {
         imageConfig: {
           aspectRatio: aspectRatio || '1:1',
           imageSize: imageSize || '1K',
-          outputMimeType: 'image/png',
         },
         safetySettings: [
           { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
