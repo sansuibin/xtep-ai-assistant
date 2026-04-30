@@ -1,107 +1,112 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query, queryOne } from '@/lib/db';
-import { createHash } from 'crypto';
+import { readFile, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import path from 'path';
 
-// Simple hash function for passwords
-function hashPassword(password: string): string {
-	return createHash('sha256').update(password).digest('hex');
+interface UserConfig {
+  id: string;
+  username: string;
+  password: string;
+  apiKey: string;
+  model: string;
+  isActive: boolean;
 }
 
-// Update user
-export async function PUT(request: NextRequest) {
-	try {
-		const token = request.headers.get('Authorization')?.replace('Bearer ', '');
+const USER_CONFIG_PATH = path.join(
+  process.env.COZE_WORKSPACE_PATH || '/workspace/projects', 
+  'users.json'
+);
 
-		if (!token) {
-			return NextResponse.json({ error: '未授权' }, { status: 401 });
-		}
-
-		const { id, username, password, apiKey, modelName, provider, isActive } = await request.json();
-
-		if (!id) {
-			return NextResponse.json({ error: '缺少用户ID' }, { status: 400 });
-		}
-
-		// Build update query dynamically
-		const updates: string[] = [];
-		const values: unknown[] = [];
-		let paramIndex = 1;
-
-		if (username !== undefined) {
-			updates.push(`username = $${paramIndex++}`);
-			values.push(username);
-		}
-		if (password !== undefined && password !== '') {
-			updates.push(`password_hash = $${paramIndex++}`);
-			values.push(hashPassword(password));
-		}
-		if (apiKey !== undefined) {
-			updates.push(`api_key = $${paramIndex++}`);
-			values.push(apiKey);
-		}
-		if (modelName !== undefined) {
-			updates.push(`model_name = $${paramIndex++}`);
-			values.push(modelName);
-		}
-		if (provider !== undefined) {
-			updates.push(`provider = $${paramIndex++}`);
-			values.push(provider);
-		}
-		if (isActive !== undefined) {
-			updates.push(`is_active = $${paramIndex++}`);
-			values.push(isActive);
-		}
-		updates.push(`updated_at = $${paramIndex++}`);
-		values.push(new Date().toISOString());
-		values.push(id);
-
-		const result = await queryOne<{
-			id: number;
-			user_id: string;
-			username: string;
-			model_name: string;
-			provider: string;
-			is_active: boolean;
-		}>(
-			`UPDATE api_configs SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING id, user_id, username, model_name, provider, is_active`,
-			values
-		);
-
-		if (!result) {
-			return NextResponse.json({ error: '用户不存在' }, { status: 404 });
-		}
-
-		return NextResponse.json({
-			success: true,
-			user: result,
-		});
-	} catch (error) {
-		console.error('Update user error:', error);
-		return NextResponse.json({ error: '更新用户失败' }, { status: 500 });
-	}
+async function loadUserConfigs(): Promise<UserConfig[]> {
+  try {
+    if (!existsSync(USER_CONFIG_PATH)) return [];
+    const data = await readFile(USER_CONFIG_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    return [];
+  }
 }
 
-// Delete user
-export async function DELETE(request: NextRequest) {
-	try {
-		const token = request.headers.get('Authorization')?.replace('Bearer ', '');
+async function saveUserConfigs(configs: UserConfig[]): Promise<void> {
+  await writeFile(USER_CONFIG_PATH, JSON.stringify(configs, null, 2), 'utf-8');
+}
 
-		if (!token) {
-			return NextResponse.json({ error: '未授权' }, { status: 401 });
-		}
+function verifyAdmin(request: NextRequest): boolean {
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader) return false;
+  const token = authHeader.replace('Bearer ', '');
+  const adminToken = process.env.ADMIN_TOKEN || 'admin-token-xtep-2024';
+  return token === adminToken;
+}
 
-		const { searchParams } = new URL(request.url);
-		const id = searchParams.get('id');
+// PUT - Update user
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  if (!verifyAdmin(request)) {
+    return NextResponse.json({ error: '未授权' }, { status: 401 });
+  }
 
-		if (!id) {
-			return NextResponse.json({ error: '缺少用户ID' }, { status: 400 });
-		}
+  try {
+    const { id } = await params;
+    const body = await request.json();
+    const { username, password, apiKey, model, isActive } = body;
 
-		const result = await query('DELETE FROM api_configs WHERE id = $1', [parseInt(id)]);
+    const configs = await loadUserConfigs();
+    const index = configs.findIndex(u => u.id === id);
 
-		return NextResponse.json({ success: true });
-	} catch (error) {
-		console.error('Delete user error:', error);
-		return NextResponse.json({ error: '删除用户失败' }, { status: 500 });
-	}
+    if (index === -1) {
+      return NextResponse.json({ error: '用户不存在' }, { status: 404 });
+    }
+
+    // Update fields
+    if (username !== undefined) configs[index].username = username;
+    if (password !== undefined && password !== '') configs[index].password = password;
+    if (apiKey !== undefined) configs[index].apiKey = apiKey;
+    if (model !== undefined) configs[index].model = model;
+    if (isActive !== undefined) configs[index].isActive = isActive;
+
+    await saveUserConfigs(configs);
+
+    return NextResponse.json({
+      success: true,
+      user: {
+        id: configs[index].id,
+        username: configs[index].username,
+        model: configs[index].model,
+        isActive: configs[index].isActive,
+      },
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    return NextResponse.json({ error: '更新用户失败' }, { status: 500 });
+  }
+}
+
+// DELETE - Delete user
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  if (!verifyAdmin(request)) {
+    return NextResponse.json({ error: '未授权' }, { status: 401 });
+  }
+
+  try {
+    const { id } = await params;
+    const configs = await loadUserConfigs();
+    const filtered = configs.filter(u => u.id !== id);
+
+    if (filtered.length === configs.length) {
+      return NextResponse.json({ error: '用户不存在' }, { status: 404 });
+    }
+
+    await saveUserConfigs(filtered);
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    return NextResponse.json({ error: '删除用户失败' }, { status: 500 });
+  }
 }

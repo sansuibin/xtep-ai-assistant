@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
 import { generateId } from '@/lib/utils';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 
@@ -24,10 +23,26 @@ interface ChatMessage {
   }>;
 }
 
+// User config type
+interface UserConfig {
+  id: string;
+  username: string;
+  password: string;
+  apiKey: string;
+  model: string;
+  isActive: boolean;
+}
+
 // Image storage directory
 const IMAGE_DIR = process.env.NODE_ENV === 'production' 
   ? '/tmp/chat-images' 
   : path.join(process.env.COZE_WORKSPACE_PATH || '/workspace/projects', 'public/chat-images');
+
+// User config file path
+const USER_CONFIG_PATH = path.join(
+  process.env.COZE_WORKSPACE_PATH || '/workspace/projects', 
+  'users.json'
+);
 
 // Ensure image directory exists
 async function ensureImageDir() {
@@ -36,21 +51,45 @@ async function ensureImageDir() {
   }
 }
 
-// Get API key from environment
-function getApiKey(): string | null {
-  // 优先使用 GOOGLE_CLOUD_API_KEY（用于 @google/genai SDK）
-  return process.env.GOOGLE_CLOUD_API_KEY || process.env.GOOGLE_API_KEY || null;
+// Load user configs from file
+async function loadUserConfigs(): Promise<UserConfig[]> {
+  try {
+    if (!existsSync(USER_CONFIG_PATH)) {
+      // Create default config
+      const defaultConfigs: UserConfig[] = [
+        {
+          id: 'demo',
+          username: '测试用户',
+          password: 'demo123',
+          apiKey: process.env.EASYROUTER_API_KEY || '',
+          model: 'gemini-3.1-flash-image-preview',
+          isActive: true,
+        },
+      ];
+      await writeFile(USER_CONFIG_PATH, JSON.stringify(defaultConfigs, null, 2), 'utf-8');
+      return defaultConfigs;
+    }
+    const data = await readFile(USER_CONFIG_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Error loading user configs:', error);
+    return [];
+  }
+}
+
+// Get user by ID
+async function getUserById(userId: string): Promise<UserConfig | null> {
+  const configs = await loadUserConfigs();
+  return configs.find(u => u.id === userId && u.isActive) || null;
 }
 
 // Convert local image URL to base64
 async function imageUrlToBase64(imageUrl: string): Promise<string | null> {
   try {
-    // If it's already a base64 data URL, extract the base64 part
     if (imageUrl.startsWith('data:')) {
       return imageUrl.split(',')[1];
     }
     
-    // If it's a local file path
     if (imageUrl.startsWith('/') || imageUrl.startsWith('http')) {
       const response = await fetch(imageUrl);
       if (!response.ok) return null;
@@ -75,7 +114,6 @@ async function saveImageToFile(base64Data: string, sessionId: string): Promise<s
   
   await writeFile(filepath, buffer);
   
-  // Return public URL
   if (process.env.NODE_ENV === 'production') {
     return `/api/images/${filename}`;
   } else {
@@ -83,7 +121,7 @@ async function saveImageToFile(base64Data: string, sessionId: string): Promise<s
   }
 }
 
-// Image generation API route with Gemini multimodal model
+// Chat API route using EasyRouter with Gemini native format
 export async function POST(request: NextRequest) {
   try {
     const body: ChatRequest = await request.json();
@@ -96,22 +134,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get API key
-    const apiKey = getApiKey();
+    // Get user config
+    const user = await getUserById(userId);
+    if (!user) {
+      return NextResponse.json(
+        { error: 'User not found or inactive' },
+        { status: 401 }
+      );
+    }
 
+    const apiKey = user.apiKey || process.env.EASYROUTER_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'API key not configured. Please set GOOGLE_CLOUD_API_KEY environment variable.' },
+        { error: 'API key not configured. Please set EASYROUTER_API_KEY or configure user API key.' },
         { status: 500 }
       );
     }
 
-    // Initialize Gemini client with new SDK
-    const ai = new GoogleGenAI({
-      apiKey: apiKey,
-    });
+    const baseUrl = process.env.EASYROUTER_BASE_URL || 'https://easyrouter.io';
+    const model = user.model || 'gemini-3.1-flash-image-preview';
 
-    // Build contents
+    // Build Gemini native format contents
     const contents: Array<{
       role: string;
       parts: Array<{
@@ -157,51 +200,67 @@ export async function POST(request: NextRequest) {
       parts: [{ text: prompt }],
     });
 
-    // Configure generation
-    const generationConfig = {
-      maxOutputTokens: 32768,
-      temperature: 1,
-      topP: 0.95,
-      responseModalities: ['TEXT', 'IMAGE'],
-      thinkingConfig: {
-        thinkingLevel: 'HIGH',
+    // Build Gemini native format request body
+    const requestBody = {
+      contents,
+      generationConfig: {
+        maxOutputTokens: 32768,
+        temperature: 1,
+        topP: 0.95,
+        responseModalities: ['TEXT', 'IMAGE'],
+        thinkingConfig: {
+          thinkingLevel: 'HIGH',
+        },
+        imageConfig: {
+          aspectRatio: aspectRatio || '1:1',
+          imageSize: imageSize || '1K',
+          outputMimeType: 'image/png',
+        },
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'OFF' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'OFF' },
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
+        ],
       },
-      imageConfig: {
-        aspectRatio: aspectRatio || '1:1',
-        imageSize: imageSize || '1K',
-        outputMimeType: 'image/png',
-      },
-      safetySettings: [
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'OFF' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'OFF' },
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
-      ],
     };
 
-    // Generate content stream
-    const streamingResp = await ai.models.generateContentStream({
-      model: 'gemini-3.1-flash-image-preview',
-      contents,
-      config: generationConfig,
-    });
+    // Call EasyRouter API (Gemini native format)
+    const response = await fetch(
+      `${baseUrl}/v1beta/models/${model}:generateContent/`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+      }
+    );
 
-    // Collect response
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('EasyRouter API error:', response.status, errorText);
+      return NextResponse.json(
+        { error: `API call failed: ${response.status} - ${errorText}` },
+        { status: response.status }
+      );
+    }
+
+    const result = await response.json();
+
+    // Parse response
     const responseParts: { text?: string; imageUrl?: string }[] = [];
     let hasImage = false;
 
-    for await (const chunk of streamingResp) {
-      if (chunk.text) {
-        responseParts.push({ text: chunk.text });
-      } else if (chunk.candidates?.[0]?.content?.parts) {
-        for (const part of chunk.candidates[0].content.parts) {
-          if (part.text) {
-            responseParts.push({ text: part.text });
-          } else if (part.inlineData) {
-            const imageUrl = await saveImageToFile(part.inlineData.data || '', sessionId);
-            responseParts.push({ imageUrl });
-            hasImage = true;
-          }
+    if (result.candidates?.[0]?.content?.parts) {
+      for (const part of result.candidates[0].content.parts) {
+        if (part.text) {
+          responseParts.push({ text: part.text });
+        } else if (part.inlineData) {
+          const imageUrl = await saveImageToFile(part.inlineData.data || '', sessionId);
+          responseParts.push({ imageUrl });
+          hasImage = true;
         }
       }
     }
@@ -228,7 +287,7 @@ export async function POST(request: NextRequest) {
       message: hasImage 
         ? 'Generated ' + imageUrls.length + ' image(s)'
         : 'Response generated (no image)',
-      provider: 'gemini-multimodal',
+      provider: 'easyrouter-gemini',
     });
 
   } catch (error) {
@@ -242,19 +301,22 @@ export async function POST(request: NextRequest) {
 
 // GET request to check API status
 export async function GET() {
-  const apiKey = getApiKey();
+  const baseUrl = process.env.EASYROUTER_BASE_URL || 'https://easyrouter.io';
+  const defaultApiKey = process.env.EASYROUTER_API_KEY;
 
   return NextResponse.json({
     status: 'ok',
-    service: 'Xtep AI Multimodal Chat',
+    service: '特步AI生图助手',
+    provider: 'EasyRouter + Gemini',
     model: 'gemini-3.1-flash-image-preview',
-    apiKeyConfigured: !!apiKey,
-    apiKeyPreview: apiKey ? apiKey.substring(0, 8) + '...' : null,
+    baseUrl,
+    defaultApiKeyConfigured: !!defaultApiKey,
     features: [
       'Text generation',
       'Image generation',
       'Multi-turn conversation',
       'Image input support',
+      'Per-user API Key',
     ],
   });
 }

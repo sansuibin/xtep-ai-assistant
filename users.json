@@ -1,0 +1,10 @@
+[
+  {
+    "id": "demo",
+    "username": "测试用户",
+    "password": "demo123",
+    "apiKey": "",
+    "model": "gemini-3.1-flash-image-preview",
+    "isActive": true
+  }
+]

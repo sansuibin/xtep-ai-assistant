@@ -1,117 +1,120 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query, queryOne } from '@/lib/db';
-import { createHash } from 'crypto';
+import { readFile, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import path from 'path';
 
-// Simple hash function for passwords
-function hashPassword(password: string): string {
-	return createHash('sha256').update(password).digest('hex');
+interface UserConfig {
+  id: string;
+  username: string;
+  password: string;
+  apiKey: string;
+  model: string;
+  isActive: boolean;
 }
 
-// Get all users
+const USER_CONFIG_PATH = path.join(
+  process.env.COZE_WORKSPACE_PATH || '/workspace/projects', 
+  'users.json'
+);
+
+async function loadUserConfigs(): Promise<UserConfig[]> {
+  try {
+    if (!existsSync(USER_CONFIG_PATH)) {
+      return [];
+    }
+    const data = await readFile(USER_CONFIG_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Error loading user configs:', error);
+    return [];
+  }
+}
+
+async function saveUserConfigs(configs: UserConfig[]): Promise<void> {
+  await writeFile(USER_CONFIG_PATH, JSON.stringify(configs, null, 2), 'utf-8');
+}
+
+// Verify admin token
+function verifyAdmin(request: NextRequest): boolean {
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader) return false;
+  
+  const token = authHeader.replace('Bearer ', '');
+  const adminToken = process.env.ADMIN_TOKEN || 'admin-token-xtep-2024';
+  return token === adminToken;
+}
+
+// GET - List all users
 export async function GET(request: NextRequest) {
-	try {
-		// Verify admin session (simple token check)
-		const token = request.headers.get('Authorization')?.replace('Bearer ', '');
+  if (!verifyAdmin(request)) {
+    return NextResponse.json({ error: '未授权' }, { status: 401 });
+  }
 
-		if (!token) {
-			return NextResponse.json({ error: '未授权' }, { status: 401 });
-		}
+  const configs = await loadUserConfigs();
+  
+  // Hide passwords in response
+  const users = configs.map(u => ({
+    id: u.id,
+    username: u.username,
+    apiKey: u.apiKey ? u.apiKey.substring(0, 8) + '...' : '',
+    apiKeyFull: u.apiKey,
+    model: u.model,
+    isActive: u.isActive,
+  }));
 
-		// Fetch all API configs (users)
-		const users = await query<{
-			id: number;
-			user_id: string;
-			username: string;
-			model_name: string;
-			provider: string;
-			is_active: boolean;
-			usage_count: number;
-			created_at: string;
-			updated_at: string | null;
-		}>('SELECT * FROM api_configs ORDER BY created_at DESC');
-
-		// Don't return API keys in list
-		const safeData = users.rows.map((user) => ({
-			id: user.id,
-			user_id: user.user_id,
-			username: user.username,
-			model_name: user.model_name,
-			provider: user.provider,
-			is_active: user.is_active,
-			usage_count: user.usage_count,
-			created_at: user.created_at,
-			updated_at: user.updated_at,
-		}));
-
-		return NextResponse.json({ users: safeData });
-	} catch (error) {
-		console.error('Get users error:', error);
-		return NextResponse.json({ error: '获取用户列表失败' }, { status: 500 });
-	}
+  return NextResponse.json({ users });
 }
 
-// Create new user
+// POST - Create new user
 export async function POST(request: NextRequest) {
-	try {
-		const token = request.headers.get('Authorization')?.replace('Bearer ', '');
+  if (!verifyAdmin(request)) {
+    return NextResponse.json({ error: '未授权' }, { status: 401 });
+  }
 
-		if (!token) {
-			return NextResponse.json({ error: '未授权' }, { status: 401 });
-		}
+  try {
+    const body = await request.json();
+    const { id, username, password, apiKey, model } = body;
 
-		const { userId, username, password, apiKey, modelName, provider } = await request.json();
+    if (!id || !username || !password) {
+      return NextResponse.json(
+        { error: '用户ID、显示名称和密码为必填项' },
+        { status: 400 }
+      );
+    }
 
-		if (!userId || !username || !apiKey || !password) {
-			return NextResponse.json(
-				{ error: '缺少必填字段（密码必填）' },
-				{ status: 400 }
-			);
-		}
+    const configs = await loadUserConfigs();
+    
+    // Check if user ID already exists
+    if (configs.find(u => u.id === id)) {
+      return NextResponse.json(
+        { error: '用户ID已存在' },
+        { status: 400 }
+      );
+    }
 
-		// Check if user_id already exists
-		const existing = await queryOne<{ id: number }>(
-			'SELECT id FROM api_configs WHERE user_id = $1 LIMIT 1',
-			[userId]
-		);
+    const newUser: UserConfig = {
+      id,
+      username,
+      password,
+      apiKey: apiKey || '',
+      model: model || 'gemini-3.1-flash-image-preview',
+      isActive: true,
+    };
 
-		if (existing) {
-			return NextResponse.json(
-				{ error: '用户ID已存在' },
-				{ status: 400 }
-			);
-		}
+    configs.push(newUser);
+    await saveUserConfigs(configs);
 
-		// Hash password if provided
-		const passwordHash = password ? hashPassword(password) : null;
-
-		// Insert new user
-		const result = await queryOne<{
-			id: number;
-			user_id: string;
-			username: string;
-			model_name: string;
-			provider: string;
-			is_active: boolean;
-		}>(
-			`INSERT INTO api_configs (user_id, username, password_hash, api_key, model_name, provider, is_active, usage_count)
-			 VALUES ($1, $2, $3, $4, $5, $6, true, 0)
-			 RETURNING id, user_id, username, model_name, provider, is_active`,
-			[userId, username, passwordHash, apiKey, modelName || 'gemini-2.0-flash', provider || 'google']
-		);
-
-		if (!result) {
-			throw new Error('Insert failed');
-		}
-
-		return NextResponse.json({
-			success: true,
-			user: result,
-		});
-	} catch (error) {
-		console.error('Create user error:', error);
-		return NextResponse.json(
-			{ error: '创建用户失败' },
-			{ status: 500 }
-		);
-	}
+    return NextResponse.json({
+      success: true,
+      user: {
+        id: newUser.id,
+        username: newUser.username,
+        model: newUser.model,
+        isActive: newUser.isActive,
+      },
+    });
+  } catch (error) {
+    console.error('Create user error:', error);
+    return NextResponse.json({ error: '创建用户失败' }, { status: 500 });
+  }
 }

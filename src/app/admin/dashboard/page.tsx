@@ -3,17 +3,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { X, Plus, Edit2, Trash2, Users, Settings, LogOut } from 'lucide-react';
+import { X, Plus, Edit2, Trash2, Users, Settings, LogOut, Key } from 'lucide-react';
 
 interface User {
-	id: number;
-	user_id: string;
-	username: string;
-	model_name: string;
-	provider: string;
-	is_active: boolean;
-	usage_count: number;
-	created_at: string;
+  id: string;
+  username: string;
+  apiKey: string;
+  apiKeyFull: string;
+  model: string;
+  isActive: boolean;
 }
 
 export default function AdminDashboard() {
@@ -27,10 +25,8 @@ export default function AdminDashboard() {
 		username: '',
 		password: '',
 		apiKey: '',
-		modelName: 'gemini-2.0-flash',
-		provider: 'google',
+		model: 'gemini-3.1-flash-image-preview',
 	});
-	const [adminUser, setAdminUser] = useState<{ id: number; username: string } | null>(null);
 
 	const fetchUsers = useCallback(async (token?: string) => {
 		const authToken = token || localStorage.getItem('admin_token');
@@ -55,20 +51,14 @@ export default function AdminDashboard() {
 		}
 	}, [router]);
 
-	// Check auth on mount
 	useEffect(() => {
 		const token = localStorage.getItem('admin_token');
-		const userStr = localStorage.getItem('admin_user');
-
-		if (!token || !userStr) {
+		if (!token) {
 			router.push('/admin/login');
 			return;
 		}
-
-		setAdminUser(JSON.parse(userStr));
 		fetchUsers(token);
 	}, [router, fetchUsers]);
-
 
 	const handleLogout = () => {
 		localStorage.removeItem('admin_token');
@@ -83,8 +73,7 @@ export default function AdminDashboard() {
 			username: '',
 			password: '',
 			apiKey: '',
-			modelName: 'gemini-2.0-flash',
-			provider: 'google',
+			model: 'gemini-3.1-flash-image-preview',
 		});
 		setShowModal(true);
 	};
@@ -92,12 +81,11 @@ export default function AdminDashboard() {
 	const openEditModal = (user: User) => {
 		setEditingUser(user);
 		setFormData({
-			userId: user.user_id,
+			userId: user.id,
 			username: user.username,
-			password: '', // Don't prefill password for security
-			apiKey: '', // Don't prefill API key for security
-			modelName: user.model_name,
-			provider: user.provider,
+			password: '',
+			apiKey: user.apiKeyFull || '',
+			model: user.model,
 		});
 		setShowModal(true);
 	};
@@ -107,47 +95,54 @@ export default function AdminDashboard() {
 		const token = localStorage.getItem('admin_token');
 		if (!token) return;
 
-		const url = editingUser
-			? `/api/admin/users/${editingUser.id}`
-			: '/api/admin/users';
-		const method = editingUser ? 'PUT' : 'POST';
-
 		try {
-			const body: Record<string, string> = {
-				userId: formData.userId,
-				username: formData.username,
-				modelName: formData.modelName,
-				provider: formData.provider,
-			};
-
 			if (editingUser) {
-				body.id = editingUser.id.toString();
-				if (formData.password) {
-					body.password = formData.password;
-				}
-				if (formData.apiKey) {
-					body.apiKey = formData.apiKey;
+				const body: Record<string, string> = {
+					username: formData.username,
+					model: formData.model,
+				};
+				if (formData.password) body.password = formData.password;
+				if (formData.apiKey) body.apiKey = formData.apiKey;
+
+				const response = await fetch(`/api/admin/users/${editingUser.id}`, {
+					method: 'PUT',
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${token}`,
+					},
+					body: JSON.stringify(body),
+				});
+
+				if (response.ok) {
+					setShowModal(false);
+					fetchUsers(token);
+				} else {
+					const data = await response.json();
+					alert(data.error || '操作失败');
 				}
 			} else {
-				body.password = formData.password;
-				body.apiKey = formData.apiKey;
-			}
+				const response = await fetch('/api/admin/users', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${token}`,
+					},
+					body: JSON.stringify({
+						id: formData.userId,
+						username: formData.username,
+						password: formData.password,
+						apiKey: formData.apiKey,
+						model: formData.model,
+					}),
+				});
 
-			const response = await fetch(url, {
-				method,
-				headers: {
-					'Content-Type': 'application/json',
-					Authorization: `Bearer ${token}`,
-				},
-				body: JSON.stringify(body),
-			});
-
-			if (response.ok) {
-				setShowModal(false);
-				fetchUsers(token);
-			} else {
-				const data = await response.json();
-				alert(data.error || '操作失败');
+				if (response.ok) {
+					setShowModal(false);
+					fetchUsers(token);
+				} else {
+					const data = await response.json();
+					alert(data.error || '操作失败');
+				}
 			}
 		} catch (error) {
 			console.error('Submit error:', error);
@@ -189,10 +184,7 @@ export default function AdminDashboard() {
 					'Content-Type': 'application/json',
 					Authorization: `Bearer ${token}`,
 				},
-				body: JSON.stringify({
-					id: user.id,
-					isActive: !user.is_active,
-				}),
+				body: JSON.stringify({ isActive: !user.isActive }),
 			});
 
 			if (response.ok) {
@@ -217,17 +209,12 @@ export default function AdminDashboard() {
 							</div>
 							<div>
 								<h1 className="text-lg font-bold text-gray-900">特步AI管理后台</h1>
-								<p className="text-xs text-gray-500">用户管理</p>
+								<p className="text-xs text-gray-500">用户与API Key管理</p>
 							</div>
 						</div>
 
 						<div className="flex items-center gap-4">
-							{adminUser && (
-								<span className="text-sm text-gray-600">
-									欢迎，{adminUser.username}
-								</span>
-							)}
-						<Link href="/" className="text-sm text-gray-500 hover:text-[#E53935]">
+							<Link href="/" className="text-sm text-gray-500 hover:text-[#E53935]">
 								返回首页
 							</Link>
 							<button
@@ -260,12 +247,12 @@ export default function AdminDashboard() {
 					<div className="bg-white rounded-xl p-6 shadow-sm">
 						<div className="flex items-center gap-4">
 							<div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
-								<Settings className="w-6 h-6 text-green-600" />
+								<Key className="w-6 h-6 text-green-600" />
 							</div>
 							<div>
-								<p className="text-sm text-gray-500">活跃用户</p>
+								<p className="text-sm text-gray-500">已配置API Key</p>
 								<p className="text-2xl font-bold text-gray-900">
-									{users.filter(u => u.is_active).length}
+									{users.filter(u => u.apiKey).length}
 								</p>
 							</div>
 						</div>
@@ -273,14 +260,12 @@ export default function AdminDashboard() {
 					<div className="bg-white rounded-xl p-6 shadow-sm">
 						<div className="flex items-center gap-4">
 							<div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-								<svg className="w-6 h-6 text-purple-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-									<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-								</svg>
+								<Settings className="w-6 h-6 text-purple-600" />
 							</div>
 							<div>
-								<p className="text-sm text-gray-500">API 调用次数</p>
+								<p className="text-sm text-gray-500">活跃用户</p>
 								<p className="text-2xl font-bold text-gray-900">
-									{users.reduce((sum, u) => sum + (u.usage_count || 0), 0)}
+									{users.filter(u => u.isActive).length}
 								</p>
 							</div>
 						</div>
@@ -312,25 +297,19 @@ export default function AdminDashboard() {
 								<thead className="bg-gray-50">
 									<tr>
 										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-											用户名
+											用户ID
 										</th>
 										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-											用户ID
+											显示名称
+										</th>
+										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+											API Key
 										</th>
 										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 											模型
 										</th>
 										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-											服务商
-										</th>
-										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 											状态
-										</th>
-										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-											调用次数
-										</th>
-										<th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-											创建时间
 										</th>
 										<th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
 											操作
@@ -340,37 +319,33 @@ export default function AdminDashboard() {
 								<tbody className="bg-white divide-y divide-gray-100">
 									{users.map((user) => (
 										<tr key={user.id} className="hover:bg-gray-50">
-											<td className="px-6 py-4 whitespace-nowrap">
-												<span className="font-medium text-gray-900">{user.username}</span>
-											</td>
-											<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-												{user.user_id}
+											<td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+												{user.id}
 											</td>
 											<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-												{user.model_name}
+												{user.username}
 											</td>
 											<td className="px-6 py-4 whitespace-nowrap">
-												<span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded">
-													{user.provider}
+												<span className={`text-xs font-mono ${user.apiKey ? 'text-green-600' : 'text-gray-400'}`}>
+													{user.apiKey || '未配置'}
+												</span>
+											</td>
+											<td className="px-6 py-4 whitespace-nowrap">
+												<span className="px-2 py-1 text-xs font-medium bg-blue-50 text-blue-600 rounded">
+													{user.model}
 												</span>
 											</td>
 											<td className="px-6 py-4 whitespace-nowrap">
 												<button
 													onClick={() => toggleUserStatus(user)}
 													className={`px-2 py-1 text-xs font-medium rounded ${
-														user.is_active
+														user.isActive
 															? 'bg-green-100 text-green-600'
 															: 'bg-gray-100 text-gray-500'
 													}`}
 												>
-													{user.is_active ? '启用' : '禁用'}
+													{user.isActive ? '启用' : '禁用'}
 												</button>
-											</td>
-											<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-												{user.usage_count || 0}
-											</td>
-											<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-												{new Date(user.created_at).toLocaleDateString('zh-CN')}
 											</td>
 											<td className="px-6 py-4 whitespace-nowrap text-right">
 												<button
@@ -392,6 +367,17 @@ export default function AdminDashboard() {
 							</table>
 						</div>
 					)}
+				</div>
+
+				{/* Info Box */}
+				<div className="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-4">
+					<h3 className="text-sm font-medium text-blue-800 mb-2">使用说明</h3>
+					<ul className="text-sm text-blue-700 space-y-1">
+						<li>• 每个用户可以配置独立的 EasyRouter API Key</li>
+						<li>• API Key 以 <code className="bg-blue-100 px-1 rounded">sk-</code> 开头，从 EasyRouter 控制台获取</li>
+						<li>• 未配置 API Key 的用户将使用环境变量中的默认 Key</li>
+						<li>• 用户登录后使用其配置的 API Key 调用 Gemini 模型</li>
+					</ul>
 				</div>
 			</main>
 
@@ -419,7 +405,7 @@ export default function AdminDashboard() {
 									onChange={(e) => setFormData({ ...formData, userId: e.target.value })}
 									disabled={!!editingUser}
 									className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#E53935] disabled:bg-gray-50"
-									placeholder="唯一标识符"
+									placeholder="唯一标识符，如 user001"
 								/>
 							</div>
 
@@ -451,46 +437,34 @@ export default function AdminDashboard() {
 
 							<div>
 								<label className="block text-sm font-medium text-gray-700 mb-1">
-									API Key <span className="text-red-500">*</span>
+									EasyRouter API Key
 								</label>
 								<input
 									type="password"
 									value={formData.apiKey}
 									onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
 									className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#E53935]"
-									placeholder={editingUser ? '留空则不修改' : '输入API Key'}
+									placeholder="sk-xxxxx（留空则使用默认Key）"
 								/>
+								<p className="mt-1 text-xs text-gray-400">
+									从 EasyRouter 控制台获取，以 sk- 开头
+								</p>
 							</div>
 
 							<div>
 								<label className="block text-sm font-medium text-gray-700 mb-1">
-									模型名称 <span className="text-red-500">*</span>
+									模型 <span className="text-red-500">*</span>
 								</label>
 								<select
-									value={formData.modelName}
-									onChange={(e) => setFormData({ ...formData, modelName: e.target.value })}
+									value={formData.model}
+									onChange={(e) => setFormData({ ...formData, model: e.target.value })}
 									className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#E53935]"
 								>
-									<option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-									<option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-									<option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-									<option value="imagen-3.0-generate-001">Imagen 3.0</option>
-									<option value="imagegeneration@006">Imagen (旧版)</option>
-								</select>
-							</div>
-
-							<div>
-								<label className="block text-sm font-medium text-gray-700 mb-1">
-									服务商
-								</label>
-								<select
-									value={formData.provider}
-									onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
-									className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#E53935]"
-								>
-									<option value="google">Google</option>
-									<option value="openai">OpenAI</option>
-									<option value="anthropic">Anthropic</option>
+									<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash (图片生成)</option>
+									<option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+									<option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+									<option value="gpt-4o">GPT-4o</option>
+									<option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
 								</select>
 							</div>
 
