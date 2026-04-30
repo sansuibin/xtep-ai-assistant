@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AppProvider, useApp } from '@/contexts/AppContext';
 import { Navbar } from '@/components/Navbar';
 import { Sidebar } from '@/components/Sidebar';
@@ -15,10 +15,45 @@ import {
 } from '@/types';
 import { generateId } from '@/lib/utils';
 
+// Persisted prompt state - survives component remounts
+const PROMPT_STORAGE_KEY = 'xtep-ai-prompt';
+
+function usePersistedPrompt() {
+  const [prompt, setPromptInternal] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return localStorage.getItem(PROMPT_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const setPrompt = useCallback((value: string) => {
+    setPromptInternal(value);
+    try {
+      localStorage.setItem(PROMPT_STORAGE_KEY, value);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  // Clear prompt from both state and storage
+  const clearPrompt = useCallback(() => {
+    setPromptInternal('');
+    try {
+      localStorage.removeItem(PROMPT_STORAGE_KEY);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  return { prompt, setPrompt, clearPrompt };
+}
+
 // Main App Component
 function XtepAIApp() {
   const { state, getCurrentSession, addMessage, updateMessage, addGeneratedImages, setGenerating } = useApp();
-  const [prompt, setPrompt] = useState('');
+  const { prompt, setPrompt, clearPrompt } = usePersistedPrompt();
 
   // Handle example prompt selection
   const handleSelectExample = (examplePrompt: string) => {
@@ -59,7 +94,7 @@ function XtepAIApp() {
     });
 
     const currentPrompt = prompt;
-    setPrompt('');
+    clearPrompt();
     setGenerating(true);
 
     try {
